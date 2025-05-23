@@ -1,0 +1,10 @@
+allensdk
+evaluate~=0.4.3
+datasets~=3.1.0
+transformers~=4.47.0.dev0
+optuna~=4.0.0
+accelerate~=1.1.1
+plotly~=5.24.1
+spikeinterface~=0.101.2
+probeinterface~=0.2.24
+ipython~=8.27.0

@@ -1,0 +1,63 @@
+{
+    "public": {
+        "label_path": "/scratch/cl7201/hippo_decoding/Neuronexus_dataset/public/Sinaps_Channel_Maps.xlsx",
+        "channel_map_path": "/vast/th3129/Neuronexus/channel_map.mat",
+        "mapping_path": "/scratch/th3129/blind_localization/data/mapping.json"
+    },
+    "AD_HF01_1": {
+        "raw_signal_path": "/scratch/th3129/blind_localization/data/AD_HF01_1.mat",
+        "raw_lfp_path": "/scratch/th3129/region_decoding/data/Neuronexus/AD_HF01_1_lfp.mat",
+        "xml_path": "/scratch/cl7201/hippo_decoding/Neuronexus_dataset/AD_HF01_1/AD_HF01_Session1h.xml",
+        "model_path":"/scratch/th3129/blind_localization/model/xcorr_AD_HF01_cs.npy",
+        "swr_path": "/scratch/th3129/shared/Neuronexus_dataset/AD_HF01_Session1h/AD_HF01_Session1h.ripples.events.mat",
+        "sheet_name": 0
+    },
+    "AD_HF02_2": {
+        "raw_signal_path": "/scratch/th3129/blind_localization/data/AD_HF02_2.mat",
+        "raw_lfp_path": "/scratch/th3129/region_decoding/data/Neuronexus/AD_HF02_2_lfp.mat",
+        "xml_path": "/scratch/cl7201/hippo_decoding/Neuronexus_dataset/AD_HF02_2/AD_HF02_230706_Session2.xml",
+        "model_path":"/scratch/th3129/blind_localization/model/xcorr_AD_HF02_2_cs.npy",
+        "swr_path": "/scratch/th3129/shared/Neuronexus_dataset/AD_HF02_230706_Session2/AD_HF02_230706_Session2.ripples.events.mat",
+        "sheet_name": 2
+    },
+    "AD_HF02_4": {
+        "raw_signal_path": "/scratch/th3129/blind_localization/data/AD_HF02_4.mat",
+        "raw_lfp_path": "/scratch/th3129/region_decoding/data/Neuronexus/AD_HF02_4_lfp.mat",
+        "xml_path": "/scratch/cl7201/hippo_decoding/Neuronexus_dataset/AD_HF02_4/AD_HF02_230722_Session4.xml",
+        "model_path": "/scratch/th3129/blind_localization/model/xcorr_AD_HF02_4_cs.npy",
+        "swr_path": "/scratch/th3129/shared/Neuronexus_dataset/AD_HF02_230722_Session4/AD_HF02_230722_Session4.ripples.events.mat",
+        "sheet_name": 3
+    },
+    "AD_HF03_1": {
+        "raw_signal_path": "/scratch/th3129/blind_localization/data/AD_HF03_1.mat",
+        "raw_lfp_path": "/scratch/th3129/region_decoding/data/Neuronexus/AD_HF03_1_lfp.mat",
+        "xml_path": "/scratch/cl7201/hippo_decoding/Neuronexus_dataset/AD_HF03_1/AD_HF03_230725_Session1.xml",
+        "model_path": "/scratch/th3129/blind_localization/model/xcorr_AD_HF03_1_cs.npy",
+        "swr_path": "/scratch/th3129/shared/Neuronexus_dataset/AD_HF03_230725_Session1/AD_HF03_230725_Session1.ripples.events.mat",
+        "sheet_name": 4        
+    },
+    "AD_HF03_2": {
+        "raw_signal_path": "/scratch/th3129/blind_localization/data/AD_HF03_2.mat",
+        "raw_lfp_path": "/scratch/th3129/region_decoding/data/Neuronexus/AD_HF03_2_lfp.mat",
+        "xml_path": "/scratch/cl7201/hippo_decoding/Neuronexus_dataset/AD_HF03_2/AD_HF03_230726_Session2.xml",
+        "model_path": "/scratch/th3129/blind_localization/model/xcorr_AD_HF03_2_cs.npy",
+        "swr_path": "/scratch/th3129/shared/Neuronexus_dataset/AD_HF03_230726_Session2/AD_HF03_230726_Session2.ripples.events.mat",
+        "sheet_name": 5        
+    },
+    "NN_syn_01": {
+        "raw_signal_path": "/scratch/th3129/blind_localization/data/NN_syn_01.mat",
+        "raw_lfp_path": "/scratch/th3129/region_decoding/data/Neuronexus/NN_syn_01_lfp.mat",
+        "xml_path": "/scratch/cl7201/hippo_decoding/Neuronexus_dataset/NN_syn_01/NN_syn_20230601.xml",
+        "model_path": "/scratch/th3129/blind_localization/model/xcorr_NN_syn_01_cs.npy",
+        "swr_path": "/scratch/th3129/shared/Neuronexus_dataset/NN_syn_20230601/NN_syn_20230601.ripples.events.mat",
+        "sheet_name": 6        
+    },
+    "NN_syn_02": {
+        "raw_signal_path": "/scratch/th3129/blind_localization/data/NN_syn_02.mat",
+        "raw_lfp_path": "/scratch/th3129/region_decoding/data/Neuronexus/NN_syn_02_lfp.mat",
+        "xml_path": "/scratch/cl7201/hippo_decoding/Neuronexus_dataset/NN_syn_02/NN_syn_20230607.xml",
+        "model_path": "/scratch/th3129/blind_localization/model/xcorr_NN_syn_02_cs.npy",
+        "swr_path": "/scratch/th3129/shared/Neuronexus_dataset/NN_syn_20230607/NN_syn_20230607.ripples.events.mat",
+        "sheet_name": 7        
+    }
+}
