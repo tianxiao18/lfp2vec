@@ -1,4 +1,4 @@
-name: blind_localization
+name: lfp2vec
 channels:
   - defaults
 dependencies:
