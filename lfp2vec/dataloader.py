@@ -71,7 +71,7 @@ class LFP2VecDataLoader:
                 "771160300",
                 "768515987",
             ],
-            "pickle_path": "spectrogram/Allen",
+            "pickle_path": "/scratch/th3129/region_decoding/data/Allen/lfp",
             "hc_acronyms": ["CA1", "CA2", "CA3", "DG", "VIS"],
         },
         "ibl": {
@@ -229,9 +229,9 @@ class LFP2VecDataLoader:
         features, labels, trials, chans = {}, {}, {}, {}
         for session in session_list:
             if data_type == "raw":
-                data = pickle.load(open(f"{pickle_path}/{session}_raw.pickle", "rb"))
+                data = pickle.load(open(f"{pickle_path}/{data_type}/{session}_raw.pickle", "rb"))
             elif data_type == "lfp":
-                data = pickle.load(open(f"{pickle_path}/{session}_lfp.pickle", "rb"))
+                data = pickle.load(open(f"{pickle_path}/{data_type}/{session}_raw.pickle", "rb"))
             X, y, trial_idx, chan_id = zip(*[(d[0], d[1], d[2], d[3]) for d in data])
             features[session] = np.array(X)
             non_zero_indices = [

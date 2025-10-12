@@ -449,6 +449,7 @@ def run_training(
         "train_logits": train_logits,  # Predicted logits for training set
         "train_labels": train_labels,  # True labels for training set
         "train_acc": train_acc,  # Accuracy for training set
+        # "train_trial_chans": train_dataset.get_trial_chan(), TBD!!!
         "train_embeddings": train_embeddings,  # Projector layer Embeddings for training set
         "val_logits": val_logits,  # Predicted logits for validation set
         "val_labels": val_labels,  # True labels for validation set
