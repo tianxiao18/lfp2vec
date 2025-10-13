@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sampling_rate",
         type=int,
-        default=16000,
+        default=1250,
         help="Target sampling rate for upsampling (Hz)",
     )
     parser.add_argument(

@@ -5,6 +5,10 @@ import pickle
 import tempfile
 from typing import Tuple
 from uuid import uuid4
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import evaluate
 import numpy as np
@@ -44,9 +48,9 @@ def run_training(
     data_type: str = "spectrogram_preprocessed",
     val_size: float = 0.2,
     test_size: float = 0.2,
-    sampling_rate: int = 16000,
+    sampling_rate: int = 1250,
     rand_init: bool = False,
-    ssl: bool = False,
+    ssl: bool = True,
     epoch: int = 50,
     lr: float = 1e-5,
 ):
@@ -120,7 +124,6 @@ def run_training(
         classifier_proj_size=256,
         # custom
         mask_time_min_masks=2,
-        mask_time_prob=0.2,
         random_init=rand_init,
         self_supervised=ssl,
     )
@@ -140,7 +143,7 @@ def run_training(
         ssl_model = Wav2Vec2ForPreTraining(config=w2v2_config)
     else:
         ssl_model = Wav2Vec2ForPreTraining.from_pretrained(
-            "facebook/wav2vec2-base", config=w2v2_config
+            "facebook/wav2vec2-base", config=w2v2_config, ignore_mismatched_sizes=True
         )
 
     ssl_model.quantizer.register_forward_hook(quantizer_hook)
@@ -179,7 +182,7 @@ def run_training(
                         ssl_model.wav2vec2,
                         train_loader,
                         val_loader,
-                        w2v2_config["hidden_size"],
+                        w2v2_config.hidden_size,
                         len(id2label),
                         device,
                     )
@@ -202,18 +205,21 @@ def run_training(
                     max_probe_acc = max(max_probe_acc, probe_val_acc)
                     ssl_model.save_pretrained(f"{output_path}/disease/ssl_model/")
 
-    ssl_model = Wav2Vec2ForPreTraining.from_pretrained(
-        f"{output_path}/disease/ssl_model/"
-    )
-
     model = AutoModelForAudioClassification.from_pretrained(
         "facebook/wav2vec2-base",
-        num_labels=len(id2label),
-        label2id=label2id,
-        id2label=id2label,
+        # num_labels=len(id2label),
+        # label2id=label2id,
+        # id2label=id2label,
         config=w2v2_config,
     )
-    model.wav2vec2.load_state_dict(ssl_model.wav2vec2.state_dict())
+
+    # Check if checkpoint exists
+    if os.path.exists(f"{output_path}/disease/ssl_model/"):
+        ssl_model = Wav2Vec2ForPreTraining.from_pretrained(
+            f"{output_path}/disease/ssl_model/",
+        )
+        model.wav2vec2.load_state_dict(ssl_model.wav2vec2.state_dict())
+    
 
     training_args = TrainingArguments(
         output_dir=f"{output_path}/disease",
@@ -501,7 +507,7 @@ def train(
     total_loss = 0
     grad_norm = []
     model.train()
-    for (input_values,) in train_loader:
+    for (input_values, labels) in train_loader:
         input_values = input_values.float().to(device)
         mask_time_indices, sampled_negative_indices = compute_mask_inputs(
             model, input_values, device
@@ -532,7 +538,7 @@ def validate(
     model.eval()
     total_loss = 0
     with torch.no_grad():
-        for (input_values,) in val_loader:
+        for (input_values, labels) in val_loader:
             input_values = input_values.float().to(device)
             mask_time_indices, sampled_negative_indices = compute_mask_inputs(
                 model, input_values, device

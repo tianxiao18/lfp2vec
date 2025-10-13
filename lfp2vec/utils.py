@@ -9,6 +9,7 @@ from transformers.models.wav2vec2.modeling_wav2vec2 import (
     _sample_negative_indices,
 )
 
+debug_data = {}
 
 def compute_mask_inputs(
     model: Wav2Vec2ForPreTraining,
@@ -27,14 +28,17 @@ def compute_mask_inputs(
     - sampled_negatives: indices for negative sampling [B, T_feat, num_negatives].
     """
     batch_size, raw_seq_len = input_values.shape
+    print(batch_size, raw_seq_len)
     with torch.no_grad():
         # Compute the feature extractor output length
         seq_len = model._get_feat_extract_output_lengths(raw_seq_len).item()
         # Compute masking
+        min_masks = getattr(model.config, "mask_time_min_masks", 1)
         mask_time_indices = _compute_mask_indices(
             (batch_size, seq_len),
             mask_prob=model.config.mask_time_prob,
             mask_length=model.config.mask_time_length,
+            min_masks=max(1, int(min_masks)),
         )
 
         assert mask_time_indices.sum() > 0, "Mask time indices sum is 0"

@@ -4,6 +4,8 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 from scipy.signal import resample
+import cupy as cp
+from cupyx.scipy.signal import resample as cupy_resample
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 
@@ -40,16 +42,19 @@ class LFP2VecDataset(Dataset):
         upsampled_signals = []
 
         for signal in self.data:
-            num_target_samples = int(
-                len(signal) * target_sampling_rate / signal_sampling_rate
-            )
-            upsampled_signal = resample(signal, num_target_samples)
-            upsampled_signal = (upsampled_signal - np.mean(upsampled_signal)) / (
-                np.std(upsampled_signal) + epsilon
-            )
+            num_target_samples = target_sampling_rate
+            if torch.cuda.is_available():
+                signal = cp.asarray(signal)
+                upsampled_signal = cupy_resample(signal, num_target_samples)
+                upsampled_signal = upsampled_signal.get()
+            else:
+                upsampled_signal = resample(signal, num_target_samples)
+            # upsampled_signal = (upsampled_signal - np.mean(upsampled_signal)) / (
+            #     np.std(upsampled_signal) + epsilon
+            # )
             upsampled_signals.append(upsampled_signal)
 
-        self.data = torch.as_tensor(np.array(upsampled_signals), dtype=torch.float32)
+        self.data = np.array(upsampled_signals)
 
 
 class LFP2VecDataLoader:
@@ -64,14 +69,14 @@ class LFP2VecDataLoader:
         "Allen": {
             "sessions_list": [
                 "719161530",
-                "794812542",
-                "778998620",
-                "798911424",
-                "771990200",
-                "771160300",
-                "768515987",
+                # "794812542",
+                # "778998620",
+                # "798911424",
+                # "771990200",
+                # "771160300",
+                # "768515987",
             ],
-            "pickle_path": "/scratch/th3129/region_decoding/data/Allen/lfp",
+            "pickle_path": "/scratch/th3129/region_decoding/data/Allen/",
             "hc_acronyms": ["CA1", "CA2", "CA3", "DG", "VIS"],
         },
         "ibl": {
@@ -229,9 +234,9 @@ class LFP2VecDataLoader:
         features, labels, trials, chans = {}, {}, {}, {}
         for session in session_list:
             if data_type == "raw":
-                data = pickle.load(open(f"{pickle_path}/{data_type}/{session}_raw.pickle", "rb"))
+                data = pickle.load(open(f"{pickle_path}/lfp/{session}_raw.pickle", "rb"))
             elif data_type == "lfp":
-                data = pickle.load(open(f"{pickle_path}/{data_type}/{session}_raw.pickle", "rb"))
+                data = pickle.load(open(f"{pickle_path}/lfp/{session}_lfp.pickle", "rb"))
             X, y, trial_idx, chan_id = zip(*[(d[0], d[1], d[2], d[3]) for d in data])
             features[session] = np.array(X)
             non_zero_indices = [
