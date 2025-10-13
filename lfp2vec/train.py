@@ -35,6 +35,7 @@ from utils import (
     get_grad_norm,
     projector_hook,
     quantizer_hook,
+    upsample_collate,
 )
 
 from blind_localization.data.PCAviz import PCAVisualizer
@@ -48,6 +49,7 @@ def run_training(
     data_type: str = "spectrogram_preprocessed",
     val_size: float = 0.2,
     test_size: float = 0.2,
+    onthefly_upsample: bool = True,
     sampling_rate: int = 1250,
     rand_init: bool = False,
     ssl: bool = True,
@@ -71,8 +73,10 @@ def run_training(
         os.makedirs(output_path)
     # load data
     data_loader = LFP2VecDataLoader(data, val_size, test_size)
+    # Keep original sample rate in dataset; on-the-fly upsampling is handled via collate_fn
+
     train_dataset, val_dataset, test_dataset = data_loader.parse_datasets(
-        sampling_rate=sampling_rate
+        sampling_rate=None if onthefly_upsample else sampling_rate
     )
 
     # id2label, label2id
@@ -154,8 +158,12 @@ def run_training(
     logger.info("Training the model...")
     optimizer = torch.optim.AdamW(ssl_model.parameters(), lr=lr)
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=True)
+    train_loader = DataLoader(
+        train_dataset, batch_size=32, shuffle=True, collate_fn=upsample_collate if onthefly_upsample else None
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=32, shuffle=True, collate_fn=upsample_collate if onthefly_upsample else None
+    )
     # test_loader not needed for SSL training loop here
     max_probe_acc = 0
 
@@ -267,9 +275,15 @@ def run_training(
 
     # Prepare for embedding collection before fine-tuning
     model.to(device)
-    train_eval_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
-    val_eval_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_eval_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    train_eval_loader = DataLoader(
+        train_dataset, batch_size=64, shuffle=False, collate_fn=upsample_collate if onthefly_upsample else None
+    )
+    val_eval_loader = DataLoader(
+        val_dataset, batch_size=64, shuffle=False, collate_fn=upsample_collate if onthefly_upsample else None
+    )
+    test_eval_loader = DataLoader(
+        test_dataset, batch_size=64, shuffle=False, collate_fn=upsample_collate if onthefly_upsample else None
+    )
 
     # Efficient single-pass embedding collection via classifier input hook
     train_embeddings, train_labels = collect_classifier_input_embeddings(

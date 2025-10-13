@@ -32,6 +32,12 @@ def parse_args() -> argparse.Namespace:
         help="Test split proportion (0-1)",
     )
     parser.add_argument(
+        "--onthefly_upsample",
+        type=bool,
+        default=True,
+        help="Upsample data to 16 kHz on the fly",
+    )
+    parser.add_argument(
         "--sampling_rate",
         type=int,
         default=1250,
@@ -69,6 +75,7 @@ def main() -> None:
         data_type=args.data_type,
         val_size=args.val_size,
         test_size=args.test_size,
+        onthefly_upsample=args.onthefly_upsample,
         sampling_rate=args.sampling_rate,
         rand_init=args.rand_init,
         ssl=args.ssl,
