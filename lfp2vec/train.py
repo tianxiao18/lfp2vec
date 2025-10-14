@@ -36,6 +36,7 @@ from utils import (
     projector_hook,
     quantizer_hook,
     upsample_collate,
+    upsample_collate_for_trainer,
 )
 
 from blind_localization.data.PCAviz import PCAVisualizer
@@ -62,6 +63,19 @@ def run_training(
       embeddings pre/post FT, fine-tunes classification head, and saves results.
     """
 
+    logger.critical(f"[RUN_TRAINING] Running training with the following parameters:")
+    logger.critical(f"GPU: {torch.cuda.is_available()}")
+    logger.critical(f"Data: {data}")
+    logger.critical(f"Data type: {data_type}")
+    logger.critical(f"Validation size: {val_size}")
+    logger.critical(f"Test size: {test_size}")
+    logger.critical(f"On-the-fly upsampling: {onthefly_upsample}")
+    logger.critical(f"Sampling rate: {sampling_rate}")
+    logger.critical(f"Random initialization: {rand_init}")
+    logger.critical(f"Self-supervised: {ssl}")
+    logger.critical(f"Epoch: {epoch}")
+    logger.critical(f"Learning rate: {lr}")
+
     # tags
     ri_tag = "rand_init" if rand_init else "pretrained"
     ssl_tag = "ssl" if ssl else "nossl"
@@ -81,8 +95,8 @@ def run_training(
 
     # id2label, label2id
     acronyms_arr = data_loader.hc_acronyms
-    id2label = {str(i): acr for i, acr in enumerate(acronyms_arr)}
-    label2id = {acr: str(i) for i, acr in enumerate(acronyms_arr)}
+    id2label = {i: acr for i, acr in enumerate(acronyms_arr)}
+    label2id = {acr: i for i, acr in enumerate(acronyms_arr)}
 
     logger.info(f"label2id: {label2id}")
     logger.info(f"id2label: {id2label}")
@@ -131,6 +145,11 @@ def run_training(
         random_init=rand_init,
         self_supervised=ssl,
     )
+
+    # Ensure classification head label space is correct
+    w2v2_config.num_labels = len(id2label)
+    w2v2_config.label2id = label2id
+    w2v2_config.id2label = id2label
 
     # convert to dict
     w2v2_config_dict = w2v2_config.to_dict()
@@ -215,16 +234,15 @@ def run_training(
 
     model = AutoModelForAudioClassification.from_pretrained(
         "facebook/wav2vec2-base",
-        # num_labels=len(id2label),
-        # label2id=label2id,
-        # id2label=id2label,
         config=w2v2_config,
+        ignore_mismatched_sizes=True,
     )
 
     # Check if checkpoint exists
     if os.path.exists(f"{output_path}/disease/ssl_model/"):
         ssl_model = Wav2Vec2ForPreTraining.from_pretrained(
             f"{output_path}/disease/ssl_model/",
+            ignore_mismatched_sizes=True,
         )
         model.wav2vec2.load_state_dict(ssl_model.wav2vec2.state_dict())
     
@@ -265,7 +283,7 @@ def run_training(
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        processing_class=feature_extractor,
+        data_collator=upsample_collate_for_trainer,
         compute_metrics=compute_metrics,
     )
 

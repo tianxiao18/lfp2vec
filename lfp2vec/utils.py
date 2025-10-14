@@ -28,7 +28,7 @@ def compute_mask_inputs(
     - sampled_negatives: indices for negative sampling [B, T_feat, num_negatives].
     """
     batch_size, raw_seq_len = input_values.shape
-    print(f"[compute_mask_inputs] batch_size: {batch_size}, raw_seq_len: {raw_seq_len}")
+    # print(f"[compute_mask_inputs] batch_size: {batch_size}, raw_seq_len: {raw_seq_len}")
     with torch.no_grad():
         # Compute the feature extractor output length
         seq_len = model._get_feat_extract_output_lengths(raw_seq_len).item()
@@ -203,5 +203,16 @@ def upsample_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[to
 
     batch_x = torch.from_numpy(np.stack(upsampled, axis=0))
     batch_y = torch.as_tensor(np.asarray(labels), dtype=torch.long)
-    print(f"[upsample_collate][{'GPU' if use_gpu else 'CPU'}] batch_x.shape: {batch_x.shape}, batch_y.shape: {batch_y.shape}")
+    # print(f"[upsample_collate][{'GPU' if use_gpu else 'CPU'}] batch_x.shape: {batch_x.shape}, batch_y.shape: {batch_y.shape}")
     return batch_x, batch_y
+
+
+def upsample_collate_for_trainer(
+    batch: List[Tuple[torch.Tensor, torch.Tensor]]
+) -> Dict[str, torch.Tensor]:
+    """Trainer-friendly collate that returns a dict with keys expected by HF.
+
+    Produces uniformly sized `input_values` and `labels` tensors.
+    """
+    batch_x, batch_y = upsample_collate(batch)
+    return {"input_values": batch_x, "labels": batch_y}
