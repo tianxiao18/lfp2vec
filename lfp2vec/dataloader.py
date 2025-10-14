@@ -1,11 +1,11 @@
 import pickle
 from typing import Optional, Tuple
 
+import cupy as cp
 import numpy as np
 import torch
-from scipy.signal import resample
-import cupy as cp
 from cupyx.scipy.signal import resample as cupy_resample
+from scipy.signal import resample
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 
@@ -16,6 +16,7 @@ class LFP2VecDataset(Dataset):
     Stores per-sample waveform, label, and a trial-channel identifier string.
     Optionally supports upsampling raw signals to the target sampling rate.
     """
+
     def __init__(
         self,
         data: np.ndarray,
@@ -234,9 +235,13 @@ class LFP2VecDataLoader:
         features, labels, trials, chans = {}, {}, {}, {}
         for session in session_list:
             if data_type == "raw":
-                data = pickle.load(open(f"{pickle_path}/lfp/{session}_raw.pickle", "rb"))
+                data = pickle.load(
+                    open(f"{pickle_path}/lfp/{session}_raw.pickle", "rb")
+                )
             elif data_type == "lfp":
-                data = pickle.load(open(f"{pickle_path}/lfp/{session}_lfp.pickle", "rb"))
+                data = pickle.load(
+                    open(f"{pickle_path}/lfp/{session}_lfp.pickle", "rb")
+                )
             X, y, trial_idx, chan_id = zip(*[(d[0], d[1], d[2], d[3]) for d in data])
             features[session] = np.array(X)
             non_zero_indices = [

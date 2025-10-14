@@ -11,6 +11,7 @@ from transformers.models.wav2vec2.modeling_wav2vec2 import (
 
 debug_data = {}
 
+
 def compute_mask_inputs(
     model: Wav2Vec2ForPreTraining,
     input_values: torch.Tensor,
@@ -149,7 +150,9 @@ def collect_classifier_input_embeddings(
         handle.remove()
 
 
-def upsample_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
+def upsample_collate(
+    batch: List[Tuple[torch.Tensor, torch.Tensor]],
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """Resample 1D signals to 16 kHz on the fly during collation.
 
     Mirrors logic in LFP2VecDataset.upsample_data: uses CuPy on CUDA when
@@ -174,20 +177,28 @@ def upsample_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[to
                 # Try GPU resample via CuPy; fallback to CPU if unavailable
                 try:
                     import cupy as cp  # type: ignore
-                    from cupyx.scipy.signal import resample as cupy_resample  # type: ignore
+                    from cupyx.scipy.signal import (
+                        resample as cupy_resample,
+                    )  # type: ignore
 
                     sig_cp = cp.asarray(signal)
                     upsampled_signal = cupy_resample(sig_cp, target_num_samples).get()
                 except Exception:
                     # Fallback to CPU path if CuPy not available
                     try:
-                        from scipy.signal import resample as scipy_resample  # type: ignore
+                        from scipy.signal import (
+                            resample as scipy_resample,
+                        )  # type: ignore
 
                         upsampled_signal = scipy_resample(signal, target_num_samples)
                     except Exception:
                         # Last-resort: linear interpolation
-                        x_old = np.linspace(0.0, 1.0, num=signal.shape[-1], endpoint=False)
-                        x_new = np.linspace(0.0, 1.0, num=target_num_samples, endpoint=False)
+                        x_old = np.linspace(
+                            0.0, 1.0, num=signal.shape[-1], endpoint=False
+                        )
+                        x_new = np.linspace(
+                            0.0, 1.0, num=target_num_samples, endpoint=False
+                        )
                         upsampled_signal = np.interp(x_new, x_old, signal)
             else:
                 try:
@@ -196,7 +207,9 @@ def upsample_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[to
                     upsampled_signal = scipy_resample(signal, target_num_samples)
                 except Exception:
                     x_old = np.linspace(0.0, 1.0, num=signal.shape[-1], endpoint=False)
-                    x_new = np.linspace(0.0, 1.0, num=target_num_samples, endpoint=False)
+                    x_new = np.linspace(
+                        0.0, 1.0, num=target_num_samples, endpoint=False
+                    )
                     upsampled_signal = np.interp(x_new, x_old, signal)
 
         upsampled.append(upsampled_signal.astype(np.float32))
@@ -208,7 +221,7 @@ def upsample_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[to
 
 
 def upsample_collate_for_trainer(
-    batch: List[Tuple[torch.Tensor, torch.Tensor]]
+    batch: List[Tuple[torch.Tensor, torch.Tensor]],
 ) -> Dict[str, torch.Tensor]:
     """Trainer-friendly collate that returns a dict with keys expected by HF.
 

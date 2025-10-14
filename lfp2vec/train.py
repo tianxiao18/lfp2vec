@@ -2,13 +2,13 @@ import gc
 import logging
 import os
 import pickle
+import sys
 import tempfile
 from typing import Tuple
 from uuid import uuid4
-import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import evaluate
 import numpy as np
@@ -178,10 +178,16 @@ def run_training(
     optimizer = torch.optim.AdamW(ssl_model.parameters(), lr=lr)
 
     train_loader = DataLoader(
-        train_dataset, batch_size=32, shuffle=True, collate_fn=upsample_collate if onthefly_upsample else None
+        train_dataset,
+        batch_size=32,
+        shuffle=True,
+        collate_fn=upsample_collate if onthefly_upsample else None,
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=32, shuffle=True, collate_fn=upsample_collate if onthefly_upsample else None
+        val_dataset,
+        batch_size=32,
+        shuffle=True,
+        collate_fn=upsample_collate if onthefly_upsample else None,
     )
     # test_loader not needed for SSL training loop here
     max_probe_acc = 0
@@ -245,7 +251,6 @@ def run_training(
             ignore_mismatched_sizes=True,
         )
         model.wav2vec2.load_state_dict(ssl_model.wav2vec2.state_dict())
-    
 
     training_args = TrainingArguments(
         output_dir=f"{output_path}/disease",
@@ -294,13 +299,22 @@ def run_training(
     # Prepare for embedding collection before fine-tuning
     model.to(device)
     train_eval_loader = DataLoader(
-        train_dataset, batch_size=64, shuffle=False, collate_fn=upsample_collate if onthefly_upsample else None
+        train_dataset,
+        batch_size=64,
+        shuffle=False,
+        collate_fn=upsample_collate if onthefly_upsample else None,
     )
     val_eval_loader = DataLoader(
-        val_dataset, batch_size=64, shuffle=False, collate_fn=upsample_collate if onthefly_upsample else None
+        val_dataset,
+        batch_size=64,
+        shuffle=False,
+        collate_fn=upsample_collate if onthefly_upsample else None,
     )
     test_eval_loader = DataLoader(
-        test_dataset, batch_size=64, shuffle=False, collate_fn=upsample_collate if onthefly_upsample else None
+        test_dataset,
+        batch_size=64,
+        shuffle=False,
+        collate_fn=upsample_collate if onthefly_upsample else None,
     )
 
     # Efficient single-pass embedding collection via classifier input hook
@@ -539,7 +553,7 @@ def train(
     total_loss = 0
     grad_norm = []
     model.train()
-    for (input_values, labels) in train_loader:
+    for input_values, labels in train_loader:
         input_values = input_values.float().to(device)
         mask_time_indices, sampled_negative_indices = compute_mask_inputs(
             model, input_values, device
@@ -570,7 +584,7 @@ def validate(
     model.eval()
     total_loss = 0
     with torch.no_grad():
-        for (input_values, labels) in val_loader:
+        for input_values, labels in val_loader:
             input_values = input_values.float().to(device)
             mask_time_indices, sampled_negative_indices = compute_mask_inputs(
                 model, input_values, device
