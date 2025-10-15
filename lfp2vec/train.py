@@ -384,17 +384,17 @@ def run_training(
     best_ckpt_path = trainer.state.best_model_checkpoint
 
     # pickle relevant data
-    train_pred = trainer.predict(train_dataset.with_format("torch"))
+    train_pred = trainer.predict(train_dataset)
     train_logits = train_pred[0]
     train_labels = train_pred[1]
     train_acc = train_pred[2]["test_accuracy"]
 
-    val_pred = trainer.predict(val_dataset.with_format("torch"))
+    val_pred = trainer.predict(val_dataset)
     val_logits = val_pred[0]
     val_labels = val_pred[1]
     val_acc = val_pred[2]["test_accuracy"]
 
-    test_pred = trainer.predict(test_dataset.with_format("torch"))
+    test_pred = trainer.predict(test_dataset)
     test_logits = test_pred[0]
     test_labels = test_pred[1]
     test_acc = test_pred[2]["test_accuracy"]

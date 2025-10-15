@@ -51,9 +51,9 @@ class LFP2VecDataset(Dataset):
                 upsampled_signal = upsampled_signal.get()
             else:
                 upsampled_signal = resample(signal, num_target_samples)
-            # upsampled_signal = (upsampled_signal - np.mean(upsampled_signal)) / (
-            #     np.std(upsampled_signal) + epsilon
-            # )
+            upsampled_signal = (upsampled_signal - np.mean(upsampled_signal)) / (
+                np.std(upsampled_signal) + epsilon
+            )
             upsampled_signals.append(upsampled_signal)
 
         self.data = np.array(upsampled_signals)
@@ -168,22 +168,25 @@ class LFP2VecDataLoader:
         return train_dataset, val_dataset, test_dataset
 
     def train_test_split_sessions(self, session_list: list, train_ratio: float, random_state: int=42):
-        session_list.remove(self.test_sess)
         random.seed(random_state)
-        train_session_list = random.sample(session_list, int(len(session_list) * train_ratio))
-        val_session_list = [ses for ses in session_list if ses not in train_session_list]
+
+        if len(session_list) > 3:
+            session_list.remove(self.test_sess)
+            train_session_list = random.sample(session_list, int(len(session_list) * train_ratio))
+            val_session_list = [ses for ses in session_list if ses not in train_session_list]
+        else:
+            train_session_list = [s for s in session_list if s != self.test_sess]
+            val_session_list = [session_list[session_list.index(self.test_sess) - 1]] # select the session before test as validation session (with wrap around)
         
         return train_session_list, val_session_list
 
     def train_test_split_trials(self, trial_list: list, val_ratio: float, minimum_test_count=12, random_state: int=42):
-        
-        test_tr_idx = np.random.RandomState(seed=random_state).choice(trial_list, size=minimum_test_count, replace=False)
+        train_tr_idx, test_tr_idx = train_test_split(range(len(trial_list)), test_size=float(minimum_test_count/len(trial_list)), random_state=random_state)
 
-        remaining_indices = np.setdiff1d(trial_list, test_tr_idx)
         if len(trial_list) >= minimum_test_count + 4:
-            train_tr_idx, val_tr_idx = train_test_split(remaining_indices, test_size=val_ratio, random_state=random_state)
+            train_tr_idx, val_tr_idx = train_test_split(train_tr_idx, test_size=val_ratio, random_state=random_state)
         else:
-            train_tr_idx, val_tr_idx = remaining_indices, remaining_indices
+            train_tr_idx, val_tr_idx = train_tr_idx, train_tr_idx
 
         return train_tr_idx, val_tr_idx, test_tr_idx
 
@@ -274,6 +277,7 @@ class LFP2VecDataLoader:
                     open(f"{pickle_path}/lfp/{session}_lfp.pickle", "rb")
                 )
             X, y, trial_idx, chan_id = zip(*[(d[0], d[1], d[2], d[3]) for d in data])
+            y = [s.replace("imec", "") if isinstance(s, str) else s for s in y]
             features[session] = np.array(X)
             non_zero_indices = [
                 i for i, x in enumerate(features[session]) if not np.all(x == 0)
