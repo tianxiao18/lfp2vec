@@ -10,7 +10,7 @@ def parse_args() -> argparse.Namespace:
         "--data",
         type=str,
         default="Allen",
-        choices=["Allen", "ibl", "Neuronexus", "All"],
+        choices=["Allen", "ibl", "Neuronexus", "Monkey", "All"],
         help="Dataset to use",
     )
     parser.add_argument(
@@ -20,16 +20,16 @@ def parse_args() -> argparse.Namespace:
         help="Data type tag used in result path",
     )
     parser.add_argument(
-        "--val_size",
+        "--train_size",
         type=float,
-        default=0.2,
-        help="Validation split proportion (0-1)",
+        default=0.8,
+        help="train session split proportion (0-1)",
     )
     parser.add_argument(
-        "--test_size",
-        type=float,
-        default=0.2,
-        help="Test split proportion (0-1)",
+        "--trial_length",
+        type=int,
+        default=60,
+        help="Total number of trials",
     )
     parser.add_argument(
         "--onthefly_upsample",
@@ -73,8 +73,8 @@ def main() -> None:
     run_training(
         data=args.data,
         data_type=args.data_type,
-        val_size=args.val_size,
-        test_size=args.test_size,
+        train_session_size=args.train_size,
+        trial_length=args.trial_length,
         onthefly_upsample=args.onthefly_upsample,
         sampling_rate=args.sampling_rate,
         rand_init=args.rand_init,

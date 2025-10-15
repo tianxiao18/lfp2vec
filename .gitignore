@@ -8,3 +8,5 @@ wandb/
 **/ipynb_checkpoints/
 Untitled.ipynb
 **/Untitled.ipynb
+data
+*.ext3

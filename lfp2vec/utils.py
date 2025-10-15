@@ -29,7 +29,6 @@ def compute_mask_inputs(
     - sampled_negatives: indices for negative sampling [B, T_feat, num_negatives].
     """
     batch_size, raw_seq_len = input_values.shape
-    # print(f"[compute_mask_inputs] batch_size: {batch_size}, raw_seq_len: {raw_seq_len}")
     with torch.no_grad():
         # Compute the feature extractor output length
         seq_len = model._get_feat_extract_output_lengths(raw_seq_len).item()
@@ -150,17 +149,15 @@ def collect_classifier_input_embeddings(
         handle.remove()
 
 
-def upsample_collate(
-    batch: List[Tuple[torch.Tensor, torch.Tensor]],
-) -> Tuple[torch.Tensor, torch.Tensor]:
+def upsample_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]], target_sampling_rate: int = 16000, source_sampling_rate: int=1250) -> Tuple[torch.Tensor, torch.Tensor]:
     """Resample 1D signals to 16 kHz on the fly during collation.
 
     Mirrors logic in LFP2VecDataset.upsample_data: uses CuPy on CUDA when
     available, otherwise falls back to SciPy's resample.
     """
-    target_num_samples = 16000
 
     signals, labels = zip(*batch)
+    target_num_samples = round(len(signals[0]) * target_sampling_rate / source_sampling_rate)
 
     upsampled = []
     use_gpu = torch.cuda.is_available()
@@ -177,28 +174,20 @@ def upsample_collate(
                 # Try GPU resample via CuPy; fallback to CPU if unavailable
                 try:
                     import cupy as cp  # type: ignore
-                    from cupyx.scipy.signal import (
-                        resample as cupy_resample,
-                    )  # type: ignore
+                    from cupyx.scipy.signal import resample as cupy_resample  # type: ignore
 
                     sig_cp = cp.asarray(signal)
                     upsampled_signal = cupy_resample(sig_cp, target_num_samples).get()
                 except Exception:
                     # Fallback to CPU path if CuPy not available
                     try:
-                        from scipy.signal import (
-                            resample as scipy_resample,
-                        )  # type: ignore
+                        from scipy.signal import resample as scipy_resample  # type: ignore
 
                         upsampled_signal = scipy_resample(signal, target_num_samples)
                     except Exception:
                         # Last-resort: linear interpolation
-                        x_old = np.linspace(
-                            0.0, 1.0, num=signal.shape[-1], endpoint=False
-                        )
-                        x_new = np.linspace(
-                            0.0, 1.0, num=target_num_samples, endpoint=False
-                        )
+                        x_old = np.linspace(0.0, 1.0, num=signal.shape[-1], endpoint=False)
+                        x_new = np.linspace(0.0, 1.0, num=target_num_samples, endpoint=False)
                         upsampled_signal = np.interp(x_new, x_old, signal)
             else:
                 try:
@@ -207,11 +196,12 @@ def upsample_collate(
                     upsampled_signal = scipy_resample(signal, target_num_samples)
                 except Exception:
                     x_old = np.linspace(0.0, 1.0, num=signal.shape[-1], endpoint=False)
-                    x_new = np.linspace(
-                        0.0, 1.0, num=target_num_samples, endpoint=False
-                    )
+                    x_new = np.linspace(0.0, 1.0, num=target_num_samples, endpoint=False)
                     upsampled_signal = np.interp(x_new, x_old, signal)
 
+        upsampled_signal = (upsampled_signal - np.mean(upsampled_signal)) / (
+                np.std(upsampled_signal) + 1e-10
+        )
         upsampled.append(upsampled_signal.astype(np.float32))
 
     batch_x = torch.from_numpy(np.stack(upsampled, axis=0))

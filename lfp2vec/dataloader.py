@@ -8,6 +8,7 @@ from cupyx.scipy.signal import resample as cupy_resample
 from scipy.signal import resample
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
+import random
 
 
 class LFP2VecDataset(Dataset):
@@ -26,6 +27,7 @@ class LFP2VecDataset(Dataset):
         self.data = data
         self.labels = labels
         self.chans = chans
+        print(np.array(self.data).shape, np.array(self.labels).shape, np.array(self.chans).shape)
 
     def __len__(self) -> int:
         return len(self.data)
@@ -36,9 +38,8 @@ class LFP2VecDataset(Dataset):
     def get_trial_chan(self, index: int) -> str:
         return self.chans[index]
 
-    def upsample_data(self, signal_sampling_rate: int) -> None:
+    def upsample_data(self, signal_sampling_rate: int, target_sampling_rate: int = 16000) -> None:
         """Resample each 1D signal to 16 kHz and z-score normalize per sample."""
-        target_sampling_rate = 16000
         epsilon = 1e-10
         upsampled_signals = []
 
@@ -79,6 +80,7 @@ class LFP2VecDataLoader:
             ],
             "pickle_path": "/scratch/th3129/region_decoding/data/Allen/",
             "hc_acronyms": ["CA1", "CA2", "CA3", "DG", "VIS"],
+            "test_sess": "719161530"
         },
         "ibl": {
             "sessions_list": [
@@ -106,6 +108,16 @@ class LFP2VecDataLoader:
             "pickle_path": "/scratch/th3129/region_decoding/data/Neuronexus/lfp",
             "hc_acronyms": ["CA1", "CA2", "CA3", "DG", "Cortex"],
         },
+        "Monkey": {
+            "sessions_list": [
+                "221007",
+                "221104",
+                "221216"
+            ],
+            "pickle_path": "/scratch/th3129/lfp2vec/data/Monkey",
+            "hc_acronyms": ["Basal_Ganglia", "Suppl_Motor_Area", "Primary_Motor_Cortex"],
+            "test_sess": "221007"
+        },
         "All": {
             "sessions_list": [
                 "719161530",
@@ -131,7 +143,7 @@ class LFP2VecDataLoader:
     }
 
     def __init__(
-        self, data: str = "All", val_size: float = None, test_size: float = None
+        self, data: str = "All", train_session_size: float = 0.8, val_trial_size: float = 0.25, trial_length: int = 60,
     ) -> None:
         if data not in self.DATA_SUITS:
             raise ValueError(f"Data {data} not found in DATA_SUITS")
@@ -140,17 +152,50 @@ class LFP2VecDataLoader:
         self.pickle_path = self.DATA_SUITS[data]["pickle_path"]
         self.hc_acronyms = self.DATA_SUITS[data]["hc_acronyms"]
         self.test_sess = self.DATA_SUITS[data].get("test_sess")
-        self.val_size = val_size
-        self.test_size = test_size
+        self.train_sess, self.val_sess = self.train_test_split_sessions(self.sessions_list, train_ratio=train_session_size)
+        self.train_trials, self.val_trials, self.test_trials = self.train_test_split_trials(np.arange(trial_length), val_ratio=val_trial_size)
 
     def parse_datasets(
         self,
         session_list: Optional[list] = None,
         sampling_rate: Optional[int] = None,
-    ) -> Tuple[LFP2VecDataset, Optional[LFP2VecDataset], Optional[LFP2VecDataset]]:
+    ) -> Tuple[LFP2VecDataset, LFP2VecDataset, LFP2VecDataset]:
+        
+        train_dataset = self._build_dataset(self.train_sess, self.train_trials, sampling_rate)
+        val_dataset = self._build_dataset(self.val_sess, self.val_trials, sampling_rate)
+        test_dataset = self._build_dataset([self.test_sess], self.test_trials, sampling_rate)
+        
+        return train_dataset, val_dataset, test_dataset
+
+    def train_test_split_sessions(self, session_list: list, train_ratio: float, random_state: int=42):
+        session_list.remove(self.test_sess)
+        random.seed(random_state)
+        train_session_list = random.sample(session_list, int(len(session_list) * train_ratio))
+        val_session_list = [ses for ses in session_list if ses not in train_session_list]
+        
+        return train_session_list, val_session_list
+
+    def train_test_split_trials(self, trial_list: list, val_ratio: float, minimum_test_count=12, random_state: int=42):
+        
+        test_tr_idx = np.random.RandomState(seed=random_state).choice(trial_list, size=minimum_test_count, replace=False)
+
+        remaining_indices = np.setdiff1d(trial_list, test_tr_idx)
+        if len(trial_list) >= minimum_test_count + 4:
+            train_tr_idx, val_tr_idx = train_test_split(remaining_indices, test_size=val_ratio, random_state=random_state)
+        else:
+            train_tr_idx, val_tr_idx = remaining_indices, remaining_indices
+
+        return train_tr_idx, val_tr_idx, test_tr_idx
+
+    def _build_dataset(
+        self,
+        session_list: Optional[list] = None,
+        trial_list: Optional[list] = None,
+        sampling_rate: Optional[int] = None,
+    ) -> LFP2VecDataset:
         """Load sessions, flatten, split, and optionally upsample waveforms.
 
-        Returns train/val/test datasets (val/test may be None if sizes not set).
+        Returns dataset of selected sessions and trials. 
         """
         # if session_list is None, use self.sessions_list
         if session_list is None:
@@ -158,7 +203,7 @@ class LFP2VecDataLoader:
         # else check if every session in session_list is in self.sessions_list
         else:
             for session in session_list:
-                if session not in self.sessions_list:
+                if session not in self.sessions_list and session != self.test_sess:
                     raise ValueError(
                         f"Session {session} not found in self.sessions_list for {self.data}"
                     )
@@ -176,10 +221,13 @@ class LFP2VecDataLoader:
         all_label_parts = []
         all_trial_chans = []
         for session in session_list:
-            session_features = features_dict[session]
-            session_labels = labels_dict[session]
-            session_trials = trials_dict[session]
-            session_chans = chans_dict[session]
+            trial_idx = [idx for idx, val in enumerate(trials_dict[session]) if val in trial_list]
+
+            session_features = features_dict[session][trial_idx]
+            session_features = np.array([f if f.shape[0] == 3749 else f[:3749] for f in session_features])
+            session_labels = labels_dict[session][trial_idx]
+            session_trials = trials_dict[session][trial_idx]
+            session_chans = chans_dict[session][trial_idx]
 
             all_data_parts.append(session_features)
             all_label_parts.append(session_labels)
@@ -201,29 +249,12 @@ class LFP2VecDataLoader:
             else np.array([])
         )
 
-        # Split data, labels, and trial_chans together to keep them aligned
-        train_dataset, val_dataset, test_dataset = None, None, None
-
-        X_train, y_train, tc_train = data_all, labels_all, all_trial_chans
-        if self.val_size is not None:
-            X_train, X_val, y_train, y_val, tc_train, tc_val = train_test_split(
-                X_train, y_train, tc_train, test_size=self.val_size, random_state=42
-            )
-            val_dataset = LFP2VecDataset(X_val, y_val, tc_val)
-        if self.test_size is not None:
-            X_train, X_test, y_train, y_test, tc_train, tc_test = train_test_split(
-                X_train, y_train, tc_train, test_size=self.test_size, random_state=42
-            )
-            test_dataset = LFP2VecDataset(X_test, y_test, tc_test)
-
-        train_dataset = LFP2VecDataset(X_train, y_train, tc_train)
+        dataset = LFP2VecDataset(data_all, labels_all, all_trial_chans)
 
         if sampling_rate is not None:
-            train_dataset.upsample_data(sampling_rate)
-            val_dataset.upsample_data(sampling_rate)
-            test_dataset.upsample_data(sampling_rate)
+            dataset.upsample_data(sampling_rate)
 
-        return train_dataset, val_dataset, test_dataset
+        return dataset
 
     def load_preprocessed_data(
         self,

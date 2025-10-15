@@ -10,6 +10,7 @@ from uuid import uuid4
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from functools import partial
 import evaluate
 import numpy as np
 import torch
@@ -48,8 +49,8 @@ logger = logging.getLogger(__name__)
 def run_training(
     data: str = "Allen",
     data_type: str = "spectrogram_preprocessed",
-    val_size: float = 0.2,
-    test_size: float = 0.2,
+    train_session_size: float = 0.8,
+    trial_length: int=60,
     onthefly_upsample: bool = True,
     sampling_rate: int = 1250,
     rand_init: bool = False,
@@ -67,8 +68,6 @@ def run_training(
     logger.critical(f"GPU: {torch.cuda.is_available()}")
     logger.critical(f"Data: {data}")
     logger.critical(f"Data type: {data_type}")
-    logger.critical(f"Validation size: {val_size}")
-    logger.critical(f"Test size: {test_size}")
     logger.critical(f"On-the-fly upsampling: {onthefly_upsample}")
     logger.critical(f"Sampling rate: {sampling_rate}")
     logger.critical(f"Random initialization: {rand_init}")
@@ -86,20 +85,19 @@ def run_training(
     if not os.path.exists(output_path):
         os.makedirs(output_path)
     # load data
-    data_loader = LFP2VecDataLoader(data, val_size, test_size)
-    # Keep original sample rate in dataset; on-the-fly upsampling is handled via collate_fn
-
+    data_loader = LFP2VecDataLoader(data, train_session_size=train_session_size, trial_length=trial_length)
     train_dataset, val_dataset, test_dataset = data_loader.parse_datasets(
         sampling_rate=None if onthefly_upsample else sampling_rate
     )
 
+    logger.info(f"Train sessions: {data_loader.train_sess}, Validation sessions: {data_loader.val_sess}, Test sessions: {data_loader.test_sess}")
+    logger.info(f"Train trials: {data_loader.train_trials}, Validation trials: {data_loader.val_trials}, Test trials: {data_loader.test_trials}")
     # id2label, label2id
     acronyms_arr = data_loader.hc_acronyms
-    id2label = {i: acr for i, acr in enumerate(acronyms_arr)}
-    label2id = {acr: i for i, acr in enumerate(acronyms_arr)}
+    id2label = {str(i): acr for i, acr in enumerate(acronyms_arr)}
+    label2id = {acr: str(i) for i, acr in enumerate(acronyms_arr)}
 
     logger.info(f"label2id: {label2id}")
-    logger.info(f"id2label: {id2label}")
     logger.info("Generating Wav2Vec Config...")
     w2v2_config = Wav2Vec2Config(
         vocab_size=32,
@@ -119,7 +117,7 @@ def run_training(
         feat_quantizer_dropout=0.0,
         conv_dim=(512, 512, 512, 512, 512, 512, 512),
         conv_stride=(5, 2, 2, 2, 2, 2, 2),
-        conv_kernel=(10, 3, 3, 3, 3, 3, 3),
+        conv_kernel=(10, 3, 3, 3, 3, 2, 2),
         conv_bias=False,
         num_conv_pos_embeddings=128,
         num_conv_pos_embeddings_groups=16,
@@ -177,17 +175,17 @@ def run_training(
     logger.info("Training the model...")
     optimizer = torch.optim.AdamW(ssl_model.parameters(), lr=lr)
 
+    collate = partial(
+        upsample_collate,
+        target_sampling_rate=16000,
+        source_sampling_rate=sampling_rate
+    )
+
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=32,
-        shuffle=True,
-        collate_fn=upsample_collate if onthefly_upsample else None,
+        train_dataset, batch_size=32, shuffle=True, collate_fn=collate if onthefly_upsample else None
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=32,
-        shuffle=True,
-        collate_fn=upsample_collate if onthefly_upsample else None,
+        val_dataset, batch_size=32, shuffle=True, collate_fn=collate if onthefly_upsample else None
     )
     # test_loader not needed for SSL training loop here
     max_probe_acc = 0
@@ -299,22 +297,13 @@ def run_training(
     # Prepare for embedding collection before fine-tuning
     model.to(device)
     train_eval_loader = DataLoader(
-        train_dataset,
-        batch_size=64,
-        shuffle=False,
-        collate_fn=upsample_collate if onthefly_upsample else None,
+        train_dataset, batch_size=64, shuffle=False, collate_fn=collate if onthefly_upsample else None
     )
     val_eval_loader = DataLoader(
-        val_dataset,
-        batch_size=64,
-        shuffle=False,
-        collate_fn=upsample_collate if onthefly_upsample else None,
+        val_dataset, batch_size=64, shuffle=False, collate_fn=collate if onthefly_upsample else None
     )
     test_eval_loader = DataLoader(
-        test_dataset,
-        batch_size=64,
-        shuffle=False,
-        collate_fn=upsample_collate if onthefly_upsample else None,
+        test_dataset, batch_size=64, shuffle=False, collate_fn=collate if onthefly_upsample else None
     )
 
     # Efficient single-pass embedding collection via classifier input hook
