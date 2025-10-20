@@ -149,7 +149,11 @@ def collect_classifier_input_embeddings(
         handle.remove()
 
 
-def upsample_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]], target_sampling_rate: int = 16000, source_sampling_rate: int=1250) -> Tuple[torch.Tensor, torch.Tensor]:
+def upsample_collate(
+    batch: List[Tuple[torch.Tensor, torch.Tensor]],
+    target_sampling_rate: int = 16000,
+    source_sampling_rate: int = 1250,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """Resample 1D signals to 16 kHz on the fly during collation.
 
     Mirrors logic in LFP2VecDataset.upsample_data: uses CuPy on CUDA when
@@ -157,7 +161,9 @@ def upsample_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]], target_samp
     """
 
     signals, labels = zip(*batch)
-    target_num_samples = round(len(signals[0]) * target_sampling_rate / source_sampling_rate)
+    target_num_samples = round(
+        len(signals[0]) * target_sampling_rate / source_sampling_rate
+    )
 
     upsampled = []
     use_gpu = torch.cuda.is_available()
@@ -186,8 +192,12 @@ def upsample_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]], target_samp
                         upsampled_signal = scipy_resample(signal, target_num_samples)
                     except Exception:
                         # Last-resort: linear interpolation
-                        x_old = np.linspace(0.0, 1.0, num=signal.shape[-1], endpoint=False)
-                        x_new = np.linspace(0.0, 1.0, num=target_num_samples, endpoint=False)
+                        x_old = np.linspace(
+                            0.0, 1.0, num=signal.shape[-1], endpoint=False
+                        )
+                        x_new = np.linspace(
+                            0.0, 1.0, num=target_num_samples, endpoint=False
+                        )
                         upsampled_signal = np.interp(x_new, x_old, signal)
             else:
                 try:
@@ -196,11 +206,13 @@ def upsample_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]], target_samp
                     upsampled_signal = scipy_resample(signal, target_num_samples)
                 except Exception:
                     x_old = np.linspace(0.0, 1.0, num=signal.shape[-1], endpoint=False)
-                    x_new = np.linspace(0.0, 1.0, num=target_num_samples, endpoint=False)
+                    x_new = np.linspace(
+                        0.0, 1.0, num=target_num_samples, endpoint=False
+                    )
                     upsampled_signal = np.interp(x_new, x_old, signal)
 
         upsampled_signal = (upsampled_signal - np.mean(upsampled_signal)) / (
-                np.std(upsampled_signal) + 1e-10
+            np.std(upsampled_signal) + 1e-10
         )
         upsampled.append(upsampled_signal.astype(np.float32))
 

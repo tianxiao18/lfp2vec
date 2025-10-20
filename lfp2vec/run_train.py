@@ -49,9 +49,11 @@ def parse_args() -> argparse.Namespace:
         help="Initialize wav2vec2 randomly instead of loading pretrained",
     )
     parser.add_argument(
-        "--ssl",
-        action="store_true",
-        help="Enable self-supervised pretraining before fine-tuning",
+        "--ssl_method",
+        type=str,
+        default="lfp2vec",
+        choices=["lfp2vec", "brainbert"],
+        help="SSL method to use for pretraining",
     )
     parser.add_argument(
         "--epoch",
@@ -78,7 +80,7 @@ def main() -> None:
         onthefly_upsample=args.onthefly_upsample,
         sampling_rate=args.sampling_rate,
         rand_init=args.rand_init,
-        ssl=args.ssl,
+        ssl_method=args.ssl_method,
         epoch=args.epoch,
         lr=args.lr,
     )

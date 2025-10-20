@@ -21,7 +21,6 @@ from linear_prober import LinearProber
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import (
-    AutoFeatureExtractor,
     AutoModelForAudioClassification,
     Trainer,
     TrainingArguments,
@@ -41,6 +40,19 @@ from utils import (
 )
 
 from blind_localization.data.PCAviz import PCAVisualizer
+from blind_localization.models.brainbert import (
+    BrainBERTModel,
+    PretrainMaskedCriterion,
+    train as brainbert_train_epoch,
+    validation as brainbert_validate_epoch,
+    BrainBERTWithMLP,
+    train_decoder as brainbert_train_decoder,
+    validate_decoder as brainbert_validate_decoder,
+)
+from blind_localization.data.datasets import RawDataset
+from blind_localization.models.contrastive_pipeline import (
+    build_multi_session_dataloader_new,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,11 +62,11 @@ def run_training(
     data: str = "Allen",
     data_type: str = "spectrogram_preprocessed",
     train_session_size: float = 0.8,
-    trial_length: int=60,
+    trial_length: int = 60,
     onthefly_upsample: bool = True,
     sampling_rate: int = 1250,
     rand_init: bool = False,
-    ssl: bool = True,
+    ssl_method: str = "lfp2vec",
     epoch: int = 50,
     lr: float = 1e-5,
 ):
@@ -64,20 +76,20 @@ def run_training(
       embeddings pre/post FT, fine-tunes classification head, and saves results.
     """
 
-    logger.critical(f"[RUN_TRAINING] Running training with the following parameters:")
+    logger.critical("[RUN_TRAINING] Running training with the following parameters:")
     logger.critical(f"GPU: {torch.cuda.is_available()}")
     logger.critical(f"Data: {data}")
     logger.critical(f"Data type: {data_type}")
     logger.critical(f"On-the-fly upsampling: {onthefly_upsample}")
     logger.critical(f"Sampling rate: {sampling_rate}")
     logger.critical(f"Random initialization: {rand_init}")
-    logger.critical(f"Self-supervised: {ssl}")
+    logger.critical(f"SSL method: {ssl_method}")
     logger.critical(f"Epoch: {epoch}")
     logger.critical(f"Learning rate: {lr}")
 
     # tags
     ri_tag = "rand_init" if rand_init else "pretrained"
-    ssl_tag = "ssl" if ssl else "nossl"
+    ssl_tag = ssl_method
     ft_tag = "no_ft"
 
     # output path
@@ -85,13 +97,23 @@ def run_training(
     if not os.path.exists(output_path):
         os.makedirs(output_path)
     # load data
-    data_loader = LFP2VecDataLoader(data, train_session_size=train_session_size, trial_length=trial_length)
+    data_loader = LFP2VecDataLoader(
+        data, train_session_size=train_session_size, trial_length=trial_length
+    )
     train_dataset, val_dataset, test_dataset = data_loader.parse_datasets(
         sampling_rate=None if onthefly_upsample else sampling_rate
     )
 
-    logger.info(f"Train sessions: {data_loader.train_sess}, Validation sessions: {data_loader.val_sess}, Test sessions: {data_loader.test_sess}")
-    logger.info(f"Train trials: {data_loader.train_trials}, Validation trials: {data_loader.val_trials}, Test trials: {data_loader.test_trials}")
+    logger.info(
+        f"Train sessions: {data_loader.train_sess}, "
+        f"Validation sessions: {data_loader.val_sess}, "
+        f"Test sessions: {data_loader.test_sess}"
+    )
+    logger.info(
+        f"Train trials: {data_loader.train_trials}, "
+        f"Validation trials: {data_loader.val_trials}, "
+        f"Test trials: {data_loader.test_trials}"
+    )
     # id2label, label2id
     acronyms_arr = data_loader.hc_acronyms
     id2label = {str(i): acr for i, acr in enumerate(acronyms_arr)}
@@ -141,7 +163,7 @@ def run_training(
         # custom
         mask_time_min_masks=2,
         random_init=rand_init,
-        self_supervised=ssl,
+        self_supervised=ssl_method == "lfp2vec",
     )
 
     # Ensure classification head label space is correct
@@ -159,38 +181,48 @@ def run_training(
         name=(f"{data}-" f"{ri_tag}-" f"{ssl_tag}-exp"),
         reinit=True,
     )
-    logger.info("Initializing Model...")
-    if rand_init:
-        ssl_model = Wav2Vec2ForPreTraining(config=w2v2_config)
-    else:
-        ssl_model = Wav2Vec2ForPreTraining.from_pretrained(
-            "facebook/wav2vec2-base", config=w2v2_config, ignore_mismatched_sizes=True
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if ssl_method == "lfp2vec":
+        logger.info("Initializing LFP2Vec Model...")
+        if rand_init:
+            ssl_model = Wav2Vec2ForPreTraining(config=w2v2_config)
+        else:
+            ssl_model = Wav2Vec2ForPreTraining.from_pretrained(
+                "facebook/wav2vec2-base",
+                config=w2v2_config,
+                ignore_mismatched_sizes=True,
+            )
+
+        ssl_model.quantizer.register_forward_hook(quantizer_hook)
+        ssl_model.to(device)
+        logger.info(f"Model is on device: {ssl_model.device}")
+
+        logger.info("Training LFP2Vec Model...")
+        optimizer = torch.optim.AdamW(ssl_model.parameters(), lr=lr)
+
+        collate = partial(
+            upsample_collate,
+            target_sampling_rate=16000,
+            source_sampling_rate=sampling_rate,
         )
 
-    ssl_model.quantizer.register_forward_hook(quantizer_hook)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ssl_model.to(device)
-    logger.info(f"Model is on device: {ssl_model.device}")
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=32,
+            shuffle=True,
+            collate_fn=collate if onthefly_upsample else None,
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=32,
+            shuffle=True,
+            collate_fn=collate if onthefly_upsample else None,
+        )
+        # test_loader not needed for SSL training loop here
+        max_probe_acc = 0
 
-    logger.info("Training the model...")
-    optimizer = torch.optim.AdamW(ssl_model.parameters(), lr=lr)
-
-    collate = partial(
-        upsample_collate,
-        target_sampling_rate=16000,
-        source_sampling_rate=sampling_rate
-    )
-
-    train_loader = DataLoader(
-        train_dataset, batch_size=32, shuffle=True, collate_fn=collate if onthefly_upsample else None
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=32, shuffle=True, collate_fn=collate if onthefly_upsample else None
-    )
-    # test_loader not needed for SSL training loop here
-    max_probe_acc = 0
-
-    if ssl:
         for epoch in tqdm(range(epoch)):
             train_loss, grad_norm = train(ssl_model, train_loader, optimizer, device)
             val_loss = validate(ssl_model, val_loader, device)
@@ -236,6 +268,189 @@ def run_training(
                     max_probe_acc = max(max_probe_acc, probe_val_acc)
                     ssl_model.save_pretrained(f"{output_path}/disease/ssl_model/")
 
+    elif ssl_method == "brainbert":
+        logger.info("Preparing BrainBERT spectrogram datasets and dataloaders...")
+        # Align data pipeline to BrainBERT script using contrastive_pipeline builders
+        spectrogram_size = 500
+        time_bins = 16
+        batch_size = 32
+
+        bb_train_dataset = RawDataset(
+            train_dataset.data,
+            train_dataset.labels,
+            spectrogram_size=spectrogram_size,
+            time_bins=time_bins,
+            library="pytorch",
+        )
+        bb_val_dataset = RawDataset(
+            val_dataset.data,
+            val_dataset.labels,
+            spectrogram_size=spectrogram_size,
+            time_bins=time_bins,
+            library="pytorch",
+        )
+        bb_test_dataset = RawDataset(
+            test_dataset.data,
+            test_dataset.labels,
+            spectrogram_size=spectrogram_size,
+            time_bins=time_bins,
+            library="pytorch",
+        )
+
+        bb_train_loader = DataLoader(
+            bb_train_dataset, batch_size=batch_size, shuffle=True
+        )
+        bb_val_loader = DataLoader(bb_val_dataset, batch_size=batch_size, shuffle=True)
+        bb_test_loader = DataLoader(
+            bb_test_dataset, batch_size=batch_size, shuffle=False
+        )
+
+        class _BBCfg:
+            pass
+
+        cfg = _BBCfg()
+        cfg.input_dim = spectrogram_size
+        cfg.hidden_dim = 8 * 16  # nhead * hid_dim_factor
+        cfg.layer_dim_feedforward = 512
+        cfg.layer_activation = "gelu"
+        cfg.nhead = 8
+        cfg.encoder_num_layers = 4
+
+        logger.info("Initializing BrainBERT model...")
+        brainbert_model = BrainBERTModel()
+        brainbert_model.build_model(cfg)
+        brainbert_model.to(device)
+
+        criterion = PretrainMaskedCriterion(alpha=2)
+        optimizer = torch.optim.Adam(brainbert_model.parameters(), lr=lr)
+
+        best_val = float("inf")
+        for ep in range(epoch):
+            tr_loss = brainbert_train_epoch(
+                brainbert_model, bb_train_loader, optimizer, criterion, device
+            )
+            va_loss = brainbert_validate_epoch(
+                brainbert_model, bb_val_loader, criterion, device
+            )
+            logger.info(
+                f"[BrainBERT] Epoch {ep+1}: train_loss={tr_loss:.4f} val_loss={va_loss:.4f}"
+            )
+            wandb.log(
+                {"bb_train_loss": tr_loss, "bb_val_loss": va_loss, "bb_epoch": ep + 1}
+            )
+            if va_loss <= best_val:
+                best_val = va_loss
+                os.makedirs(f"{output_path}/disease", exist_ok=True)
+                torch.save(
+                    brainbert_model.state_dict(),
+                    f"{output_path}/disease/brainbert_ssl.pt",
+                )
+
+        # Load best SSL checkpoint for feature-extractor baseline
+        ckpt_path = f"{output_path}/disease/brainbert_ssl.pt"
+        if os.path.exists(ckpt_path):
+            brainbert_model.load_state_dict(torch.load(ckpt_path, map_location=device))
+            logger.info(f"Loaded BrainBERT SSL checkpoint: {ckpt_path}")
+
+        # Build frozen-encoder + MLP classifier (feature extractor baseline)
+        input_size = bb_train_loader.dataset[0][0][0].size()[0]
+        input_dim = (
+            input_size // spectrogram_size
+        ) * cfg.hidden_dim  # time_bins * hidden_dim
+        clf_model = BrainBERTWithMLP(
+            brainbert_model,
+            input_dim=input_dim,
+            hidden_dim=256,
+            output_dim=len(id2label),
+        ).to(device)
+
+        combined_criterion = nn.CrossEntropyLoss()
+        combined_optimizer = torch.optim.Adam(clf_model.parameters(), lr=3e-5)
+
+        best_val_acc = 0.0
+        for ep in range(12):
+            tr = brainbert_train_decoder(
+                clf_model,
+                bb_train_loader,
+                combined_optimizer,
+                criterion,
+                combined_criterion,
+                device=device,
+                mode="separate",
+            )
+            va = brainbert_validate_decoder(
+                clf_model, bb_val_loader, combined_criterion, device=device
+            )
+            # Support both tuple and dict return signatures
+            if isinstance(tr, dict):
+                dec_train_loss = float(tr.get("loss", 0.0))
+                dec_train_acc = float(tr.get("balanced_accuracy", 0.0))
+            else:
+                dec_train_loss, dec_train_acc = tr
+            if isinstance(va, dict):
+                dec_val_loss = float(va.get("loss", 0.0))
+                dec_val_acc = float(va.get("balanced_accuracy", 0.0))
+                dec_val_f1 = float(va.get("macro_f1", 0.0))
+            else:
+                dec_val_loss, dec_val_acc, dec_val_f1 = va
+
+            wandb.log(
+                {
+                    "bb_dec_train_loss": dec_train_loss,
+                    "bb_dec_train_acc": dec_train_acc,
+                    "bb_dec_val_loss": dec_val_loss,
+                    "bb_dec_val_acc": dec_val_acc,
+                    "bb_dec_val_f1": dec_val_f1,
+                    "bb_dec_epoch": ep + 1,
+                }
+            )
+            logger.info(
+                f"[BrainBERT-Decoder] Epoch {ep+1}: train_loss={dec_train_loss:.4f} "
+                f"train_acc={dec_train_acc:.4f} val_loss={dec_val_loss:.4f} "
+                f"val_acc={dec_val_acc:.4f} val_f1={dec_val_f1:.4f}"
+            )
+            best_val_acc = max(best_val_acc, dec_val_acc)
+
+        # Final test evaluation
+        test_metrics = brainbert_validate_decoder(
+            clf_model, bb_test_loader, combined_criterion, device=device
+        )
+        if isinstance(test_metrics, dict):
+            test_acc = float(test_metrics.get("balanced_accuracy", 0.0))
+            test_f1 = float(test_metrics.get("macro_f1", 0.0))
+        else:
+            _, test_acc, test_f1 = test_metrics
+        logger.info(
+            f"[BrainBERT-Decoder] Test Acc={test_acc:.4f}, Test F1={test_f1:.4f}"
+        )
+        wandb.log({"bb_test_acc": test_acc, "bb_test_f1": test_f1})
+
+        # Save minimal results file for BrainBERT baseline
+        file_path = os.path.join(
+            output_path, f"{data}_{ri_tag}_brainbert_ft_results.pickle"
+        )
+        file_obj = {
+            "val_best_acc": best_val_acc,
+            "test_acc": test_acc,
+            "test_f1": test_f1,
+            "bb_cfg": {
+                "spectrogram_size": spectrogram_size,
+                "time_bins": time_bins,
+                "hidden_dim": cfg.hidden_dim,
+                "nhead": cfg.nhead,
+                "encoder_num_layers": cfg.encoder_num_layers,
+            },
+        }
+        with open(file_path, "wb") as f:
+            pickle.dump(file_obj, f)
+        logger.info(f"BrainBERT baseline results saved to {file_path}")
+
+        # Baseline finished, skip wav2vec2 fine-tuning path
+        gc.collect()
+        torch.cuda.empty_cache()
+        return
+
+    # ================================ Training phase ================================
     model = AutoModelForAudioClassification.from_pretrained(
         "facebook/wav2vec2-base",
         config=w2v2_config,
@@ -267,8 +482,6 @@ def run_training(
         fp16=True,
     )
 
-    feature_extractor = AutoFeatureExtractor.from_pretrained("facebook/wav2vec2-base")
-
     uuid = uuid4().hex
     unique_cache_dir = tempfile.mkdtemp(prefix="hf_eval_")
     accuracy = evaluate.load(
@@ -297,13 +510,22 @@ def run_training(
     # Prepare for embedding collection before fine-tuning
     model.to(device)
     train_eval_loader = DataLoader(
-        train_dataset, batch_size=64, shuffle=False, collate_fn=collate if onthefly_upsample else None
+        train_dataset,
+        batch_size=64,
+        shuffle=False,
+        collate_fn=collate if onthefly_upsample else None,
     )
     val_eval_loader = DataLoader(
-        val_dataset, batch_size=64, shuffle=False, collate_fn=collate if onthefly_upsample else None
+        val_dataset,
+        batch_size=64,
+        shuffle=False,
+        collate_fn=collate if onthefly_upsample else None,
     )
     test_eval_loader = DataLoader(
-        test_dataset, batch_size=64, shuffle=False, collate_fn=collate if onthefly_upsample else None
+        test_dataset,
+        batch_size=64,
+        shuffle=False,
+        collate_fn=collate if onthefly_upsample else None,
     )
 
     # Efficient single-pass embedding collection via classifier input hook
