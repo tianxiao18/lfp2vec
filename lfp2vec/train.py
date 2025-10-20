@@ -232,10 +232,10 @@ def run_training(
             )
             wandb.log(
                 {
-                    "Train Loss": train_loss,
-                    "Val Loss": val_loss,
-                    "Grad Norm": grad_norm,
-                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "ssl/train_loss": train_loss,
+                    "ssl/val_loss": val_loss,
+                    "ssl/grad_norm": grad_norm,
+                    "ssl/lr": optimizer.param_groups[0]["lr"],
                 }
             )
 
@@ -258,15 +258,354 @@ def run_training(
                 )
                 wandb.log(
                     {
-                        "Probe Train Loss": probe_train_loss,
-                        "Probe Train Accuracy": probe_train_acc,
-                        "Probe Val Loss": probe_val_loss,
-                        "Probe Val Accuracy": probe_val_acc,
+                        "probe/train_loss": probe_train_loss,
+                        "probe/train_acc": probe_train_acc,
+                        "probe/val_loss": probe_val_loss,
+                        "probe/val_acc": probe_val_acc,
                     }
                 )
                 if max_probe_acc > probe_val_acc:
                     max_probe_acc = max(max_probe_acc, probe_val_acc)
                     ssl_model.save_pretrained(f"{output_path}/disease/ssl_model/")
+
+        # ================================ Training phase lfp2vec ================================
+        model = AutoModelForAudioClassification.from_pretrained(
+            "facebook/wav2vec2-base",
+            config=w2v2_config,
+            ignore_mismatched_sizes=True,
+        )
+
+        # Check if checkpoint exists
+        if os.path.exists(f"{output_path}/disease/ssl_model/"):
+            ssl_model = Wav2Vec2ForPreTraining.from_pretrained(
+                f"{output_path}/disease/ssl_model/",
+                ignore_mismatched_sizes=True,
+            )
+            model.wav2vec2.load_state_dict(ssl_model.wav2vec2.state_dict())
+
+        training_args = TrainingArguments(
+            output_dir=f"{output_path}/disease",
+            eval_strategy="epoch",
+            save_strategy="epoch",
+            learning_rate=3e-5,
+            per_device_train_batch_size=32,
+            gradient_accumulation_steps=4,
+            per_device_eval_batch_size=32,
+            num_train_epochs=12,
+            warmup_ratio=0.1,
+            logging_steps=10,
+            load_best_model_at_end=True,
+            metric_for_best_model="accuracy",
+            push_to_hub=False,
+            fp16=True,
+        )
+
+        uuid = uuid4().hex
+        unique_cache_dir = tempfile.mkdtemp(prefix="hf_eval_")
+        accuracy = evaluate.load(
+            "accuracy", experiment_id=str(uuid), cache_dir=unique_cache_dir
+        )
+        f1_metric = evaluate.load(
+            "f1", experiment_id=str(uuid) + "_f1", cache_dir=unique_cache_dir
+        )
+
+        def compute_metrics(eval_pred):
+            """Compute accuracy from Trainer eval predictions."""
+            predictions = np.argmax(eval_pred.predictions, axis=1)
+            return accuracy.compute(
+                predictions=predictions, references=eval_pred.label_ids
+            )
+
+        # Setup trainer (used later for fine-tuning)
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=val_dataset,
+            data_collator=upsample_collate_for_trainer,
+            compute_metrics=compute_metrics,
+        )
+
+        # Register hooks
+        projector_hook_handle = model.projector.register_forward_hook(projector_hook)
+        classifier_hook_handle = model.classifier.register_forward_hook(classifier_hook)
+
+        # Prepare for embedding collection before fine-tuning
+        model.to(device)
+        train_eval_loader = DataLoader(
+            train_dataset,
+            batch_size=64,
+            shuffle=False,
+            collate_fn=collate if onthefly_upsample else None,
+        )
+        val_eval_loader = DataLoader(
+            val_dataset,
+            batch_size=64,
+            shuffle=False,
+            collate_fn=collate if onthefly_upsample else None,
+        )
+        test_eval_loader = DataLoader(
+            test_dataset,
+            batch_size=64,
+            shuffle=False,
+            collate_fn=collate if onthefly_upsample else None,
+        )
+
+        # Efficient single-pass embedding collection via classifier input hook
+        train_embeddings, train_labels = collect_classifier_input_embeddings(
+            model, train_eval_loader, device
+        )
+        val_embeddings, val_labels = collect_classifier_input_embeddings(
+            model, val_eval_loader, device
+        )
+        test_embeddings, test_labels = collect_classifier_input_embeddings(
+            model, test_eval_loader, device
+        )
+
+        visualizer = PCAVisualizer(
+            {str(i): region for i, region in enumerate(acronyms_arr)},
+            output_path=output_path,
+        )
+        try:
+            visualizer.create_pca(
+                train_embeddings,
+                train_labels,
+                2,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "train",
+            )
+            visualizer.create_pca(
+                train_embeddings,
+                train_labels,
+                3,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "train",
+            )
+            visualizer.create_pca(
+                val_embeddings,
+                val_labels,
+                2,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "val",
+            )
+            visualizer.create_pca(
+                val_embeddings,
+                val_labels,
+                3,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "val",
+            )
+            visualizer.create_pca(
+                test_embeddings,
+                test_labels,
+                2,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "test",
+            )
+            visualizer.create_pca(
+                test_embeddings,
+                test_labels,
+                3,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "test",
+            )
+
+            datasets = {
+                "train": {"embeddings": train_embeddings, "labels": train_labels},
+                "val": {"embeddings": val_embeddings, "labels": val_labels},
+                "test": {"embeddings": test_embeddings, "labels": test_labels},
+            }
+            visualizer.create_combined_pca(
+                datasets, 2, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "combined"
+            )
+            visualizer.create_combined_pca(
+                datasets, 3, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "combined"
+            )
+
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            logger.error(
+                f"Possible size mismatch: "
+                f"Train({len(train_embeddings)}, {len(train_labels)}), "
+                f"Val({len(val_embeddings)}, {len(val_labels)}), "
+                f"Test({len(test_embeddings)}, {len(test_labels)})"
+            )
+
+        # fine tune the model here
+        best_ckpt_path = None
+        trainer.train()
+        best_ckpt_path = trainer.state.best_model_checkpoint
+
+        # pickle relevant data
+        train_pred = trainer.predict(train_dataset)
+        train_logits = train_pred[0]
+        train_labels = train_pred[1]
+        train_acc = train_pred[2]["test_accuracy"]
+        train_preds = np.argmax(train_logits, axis=1)
+        train_f1 = f1_metric.compute(
+            predictions=train_preds, references=train_labels, average="macro"
+        )["f1"]
+
+        val_pred = trainer.predict(val_dataset)
+        val_logits = val_pred[0]
+        val_labels = val_pred[1]
+        val_acc = val_pred[2]["test_accuracy"]
+        val_preds = np.argmax(val_logits, axis=1)
+        val_f1 = f1_metric.compute(
+            predictions=val_preds, references=val_labels, average="macro"
+        )["f1"]
+
+        test_pred = trainer.predict(test_dataset)
+        test_logits = test_pred[0]
+        test_labels = test_pred[1]
+        test_acc = test_pred[2]["test_accuracy"]
+        test_preds = np.argmax(test_logits, axis=1)
+        test_f1 = f1_metric.compute(
+            predictions=test_preds, references=test_labels, average="macro"
+        )["f1"]
+
+        train_embeddings, train_labels = collect_classifier_input_embeddings(
+            model, train_eval_loader, device
+        )
+        val_embeddings, val_labels = collect_classifier_input_embeddings(
+            model, val_eval_loader, device
+        )
+        test_embeddings, test_labels = collect_classifier_input_embeddings(
+            model, test_eval_loader, device
+        )
+
+        ft_tag = "ft"
+        visualizer = PCAVisualizer(
+            {str(i): region for i, region in enumerate(acronyms_arr)},
+            output_path=output_path,
+        )
+        try:
+            visualizer.create_pca(
+                train_embeddings,
+                train_labels,
+                2,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "train",
+            )
+            visualizer.create_pca(
+                train_embeddings,
+                train_labels,
+                3,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "train",
+            )
+            visualizer.create_pca(
+                val_embeddings,
+                val_labels,
+                2,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "val",
+            )
+            visualizer.create_pca(
+                val_embeddings,
+                val_labels,
+                3,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "val",
+            )
+            visualizer.create_pca(
+                test_embeddings,
+                test_labels,
+                2,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "test",
+            )
+            visualizer.create_pca(
+                test_embeddings,
+                test_labels,
+                3,
+                f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
+                "test",
+            )
+
+            datasets = {
+                "train": {"embeddings": train_embeddings, "labels": train_labels},
+                "val": {"embeddings": val_embeddings, "labels": val_labels},
+                "test": {"embeddings": test_embeddings, "labels": test_labels},
+            }
+            visualizer.create_combined_pca(
+                datasets, 2, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "combined"
+            )
+            visualizer.create_combined_pca(
+                datasets, 3, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "combined"
+            )
+
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            logger.error(
+                f"Possible size mismatch: "
+                f"Train({len(train_embeddings)}, {len(train_labels)}), "
+                f"Val({len(val_embeddings)}, {len(val_labels)}), "
+                f"Test({len(test_embeddings)}, {len(test_labels)})"
+            )
+
+        file_path = os.path.join(
+            output_path, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}_results.pickle"
+        )
+
+        # chance accuracy
+        train_label_counts, train_chance_accuracy = calculate_chance_accuracy(
+            train_dataset.labels
+        )
+        val_label_counts, val_chance_accuracy = calculate_chance_accuracy(
+            val_dataset.labels
+        )
+        test_label_counts, test_chance_accuracy = calculate_chance_accuracy(
+            test_dataset.labels
+        )
+
+        file_obj = {
+            "train_logits": train_logits,  # Predicted logits for training set
+            "train_labels": train_labels,  # True labels for training set
+            "train_acc": train_acc,  # Accuracy for training set
+            # "train_trial_chans": train_dataset.get_trial_chan(), TBD!!!
+            "train_embeddings": train_embeddings,  # Projector layer Embeddings for training set
+            "val_logits": val_logits,  # Predicted logits for validation set
+            "val_labels": val_labels,  # True labels for validation set
+            "val_acc": val_acc,  # Accuracy for validation set
+            "val_embeddings": val_embeddings,  # Projector layer Embeddings for validation set
+            "test_logits": test_logits,  # Predicted logits for test set
+            "test_labels": test_labels,  # True labels for test set
+            "test_acc": test_acc,  # Accuracy for test set
+            "test_embeddings": test_embeddings,  # Projector layer Embeddings for test set
+            "train_label_counts": train_label_counts,  # Label counts for training set
+            "train_chance_accuracy": train_chance_accuracy,  # Chance accuracy for training set
+            "val_label_counts": val_label_counts,  # Label counts for validation set
+            "val_chance_accuracy": val_chance_accuracy,  # Chance accuracy for validation set
+            "test_label_counts": test_label_counts,  # Label counts for test set
+            "test_chance_accuracy": test_chance_accuracy,  # Chance accuracy for test set
+            "w2v2_config": w2v2_config_dict,  # Model configuration
+            "best_ckpt_path": best_ckpt_path,  # Path to the best checkpoint
+        }
+
+        with open(file_path, "wb") as f:
+            pickle.dump(file_obj, f)
+            logger.info(f"Session {data} results saved to {file_path}")
+        logger.info(
+            f"Train accuracy: {train_acc}, Validation accuracy: {val_acc}, Test accuracy: {test_acc}"
+        )
+        wandb.log(
+            {
+                "train/accuracy": train_acc,
+                "train/f1": train_f1,
+                "val/accuracy": val_acc,
+                "val/f1": val_f1,
+                "test/accuracy": test_acc,
+                "test/f1": test_f1,
+            }
+        )
+
+        # Deregister hooks
+        projector_hook_handle.remove()
+        classifier_hook_handle.remove()
+        gc.collect()
+        torch.cuda.empty_cache()
+        return
 
     elif ssl_method == "brainbert":
         logger.info("Preparing BrainBERT spectrogram datasets and dataloaders...")
@@ -396,12 +735,12 @@ def run_training(
 
             wandb.log(
                 {
-                    "bb_dec_train_loss": dec_train_loss,
-                    "bb_dec_train_acc": dec_train_acc,
-                    "bb_dec_val_loss": dec_val_loss,
-                    "bb_dec_val_acc": dec_val_acc,
-                    "bb_dec_val_f1": dec_val_f1,
-                    "bb_dec_epoch": ep + 1,
+                    "decoder/train_loss": dec_train_loss,
+                    "decoder/train_acc": dec_train_acc,
+                    "decoder/val_loss": dec_val_loss,
+                    "decoder/val_acc": dec_val_acc,
+                    "decoder/val_f1": dec_val_f1,
+                    "decoder/epoch": ep + 1,
                 }
             )
             logger.info(
@@ -423,7 +762,13 @@ def run_training(
         logger.info(
             f"[BrainBERT-Decoder] Test Acc={test_acc:.4f}, Test F1={test_f1:.4f}"
         )
-        wandb.log({"bb_test_acc": test_acc, "bb_test_f1": test_f1})
+        wandb.log(
+            {
+                "ssl_method": "brainbert",
+                "test/accuracy": test_acc,
+                "test/f1": test_f1,
+            }
+        )
 
         # Save minimal results file for BrainBERT baseline
         file_path = os.path.join(
@@ -449,308 +794,6 @@ def run_training(
         gc.collect()
         torch.cuda.empty_cache()
         return
-
-    # ================================ Training phase ================================
-    model = AutoModelForAudioClassification.from_pretrained(
-        "facebook/wav2vec2-base",
-        config=w2v2_config,
-        ignore_mismatched_sizes=True,
-    )
-
-    # Check if checkpoint exists
-    if os.path.exists(f"{output_path}/disease/ssl_model/"):
-        ssl_model = Wav2Vec2ForPreTraining.from_pretrained(
-            f"{output_path}/disease/ssl_model/",
-            ignore_mismatched_sizes=True,
-        )
-        model.wav2vec2.load_state_dict(ssl_model.wav2vec2.state_dict())
-
-    training_args = TrainingArguments(
-        output_dir=f"{output_path}/disease",
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        learning_rate=3e-5,
-        per_device_train_batch_size=32,
-        gradient_accumulation_steps=4,
-        per_device_eval_batch_size=32,
-        num_train_epochs=12,
-        warmup_ratio=0.1,
-        logging_steps=10,
-        load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
-        push_to_hub=False,
-        fp16=True,
-    )
-
-    uuid = uuid4().hex
-    unique_cache_dir = tempfile.mkdtemp(prefix="hf_eval_")
-    accuracy = evaluate.load(
-        "accuracy", experiment_id=str(uuid), cache_dir=unique_cache_dir
-    )
-
-    def compute_metrics(eval_pred):
-        """Compute accuracy from Trainer eval predictions."""
-        predictions = np.argmax(eval_pred.predictions, axis=1)
-        return accuracy.compute(predictions=predictions, references=eval_pred.label_ids)
-
-    # Setup trainer (used later for fine-tuning)
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
-        data_collator=upsample_collate_for_trainer,
-        compute_metrics=compute_metrics,
-    )
-
-    # Register hooks
-    projector_hook_handle = model.projector.register_forward_hook(projector_hook)
-    classifier_hook_handle = model.classifier.register_forward_hook(classifier_hook)
-
-    # Prepare for embedding collection before fine-tuning
-    model.to(device)
-    train_eval_loader = DataLoader(
-        train_dataset,
-        batch_size=64,
-        shuffle=False,
-        collate_fn=collate if onthefly_upsample else None,
-    )
-    val_eval_loader = DataLoader(
-        val_dataset,
-        batch_size=64,
-        shuffle=False,
-        collate_fn=collate if onthefly_upsample else None,
-    )
-    test_eval_loader = DataLoader(
-        test_dataset,
-        batch_size=64,
-        shuffle=False,
-        collate_fn=collate if onthefly_upsample else None,
-    )
-
-    # Efficient single-pass embedding collection via classifier input hook
-    train_embeddings, train_labels = collect_classifier_input_embeddings(
-        model, train_eval_loader, device
-    )
-    val_embeddings, val_labels = collect_classifier_input_embeddings(
-        model, val_eval_loader, device
-    )
-    test_embeddings, test_labels = collect_classifier_input_embeddings(
-        model, test_eval_loader, device
-    )
-
-    visualizer = PCAVisualizer(
-        {str(i): region for i, region in enumerate(acronyms_arr)},
-        output_path=output_path,
-    )
-    try:
-        visualizer.create_pca(
-            train_embeddings,
-            train_labels,
-            2,
-            f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
-            "train",
-        )
-        visualizer.create_pca(
-            train_embeddings,
-            train_labels,
-            3,
-            f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
-            "train",
-        )
-        visualizer.create_pca(
-            val_embeddings, val_labels, 2, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "val"
-        )
-        visualizer.create_pca(
-            val_embeddings, val_labels, 3, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "val"
-        )
-        visualizer.create_pca(
-            test_embeddings,
-            test_labels,
-            2,
-            f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
-            "test",
-        )
-        visualizer.create_pca(
-            test_embeddings,
-            test_labels,
-            3,
-            f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
-            "test",
-        )
-
-        datasets = {
-            "train": {"embeddings": train_embeddings, "labels": train_labels},
-            "val": {"embeddings": val_embeddings, "labels": val_labels},
-            "test": {"embeddings": test_embeddings, "labels": test_labels},
-        }
-        visualizer.create_combined_pca(
-            datasets, 2, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "combined"
-        )
-        visualizer.create_combined_pca(
-            datasets, 3, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "combined"
-        )
-
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        logger.error(
-            f"Possible size mismatch: "
-            f"Train({len(train_embeddings)}, {len(train_labels)}), "
-            f"Val({len(val_embeddings)}, {len(val_labels)}), "
-            f"Test({len(test_embeddings)}, {len(test_labels)})"
-        )
-
-    # fine tune the model here
-    best_ckpt_path = None
-    trainer.train()
-    best_ckpt_path = trainer.state.best_model_checkpoint
-
-    # pickle relevant data
-    train_pred = trainer.predict(train_dataset)
-    train_logits = train_pred[0]
-    train_labels = train_pred[1]
-    train_acc = train_pred[2]["test_accuracy"]
-
-    val_pred = trainer.predict(val_dataset)
-    val_logits = val_pred[0]
-    val_labels = val_pred[1]
-    val_acc = val_pred[2]["test_accuracy"]
-
-    test_pred = trainer.predict(test_dataset)
-    test_logits = test_pred[0]
-    test_labels = test_pred[1]
-    test_acc = test_pred[2]["test_accuracy"]
-
-    train_embeddings, train_labels = collect_classifier_input_embeddings(
-        model, train_eval_loader, device
-    )
-    val_embeddings, val_labels = collect_classifier_input_embeddings(
-        model, val_eval_loader, device
-    )
-    test_embeddings, test_labels = collect_classifier_input_embeddings(
-        model, test_eval_loader, device
-    )
-
-    ft_tag = "ft"
-    visualizer = PCAVisualizer(
-        {str(i): region for i, region in enumerate(acronyms_arr)},
-        output_path=output_path,
-    )
-    try:
-        visualizer.create_pca(
-            train_embeddings,
-            train_labels,
-            2,
-            f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
-            "train",
-        )
-        visualizer.create_pca(
-            train_embeddings,
-            train_labels,
-            3,
-            f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
-            "train",
-        )
-        visualizer.create_pca(
-            val_embeddings, val_labels, 2, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "val"
-        )
-        visualizer.create_pca(
-            val_embeddings, val_labels, 3, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "val"
-        )
-        visualizer.create_pca(
-            test_embeddings,
-            test_labels,
-            2,
-            f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
-            "test",
-        )
-        visualizer.create_pca(
-            test_embeddings,
-            test_labels,
-            3,
-            f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}",
-            "test",
-        )
-
-        datasets = {
-            "train": {"embeddings": train_embeddings, "labels": train_labels},
-            "val": {"embeddings": val_embeddings, "labels": val_labels},
-            "test": {"embeddings": test_embeddings, "labels": test_labels},
-        }
-        visualizer.create_combined_pca(
-            datasets, 2, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "combined"
-        )
-        visualizer.create_combined_pca(
-            datasets, 3, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}", "combined"
-        )
-
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        logger.error(
-            f"Possible size mismatch: "
-            f"Train({len(train_embeddings)}, {len(train_labels)}), "
-            f"Val({len(val_embeddings)}, {len(val_labels)}), "
-            f"Test({len(test_embeddings)}, {len(test_labels)})"
-        )
-
-    file_path = os.path.join(
-        output_path, f"{data}_{ri_tag}_{ssl_tag}_{ft_tag}_results.pickle"
-    )
-
-    # chance accuracy
-    train_label_counts, train_chance_accuracy = calculate_chance_accuracy(
-        train_dataset.labels
-    )
-    val_label_counts, val_chance_accuracy = calculate_chance_accuracy(
-        val_dataset.labels
-    )
-    test_label_counts, test_chance_accuracy = calculate_chance_accuracy(
-        test_dataset.labels
-    )
-
-    file_obj = {
-        "train_logits": train_logits,  # Predicted logits for training set
-        "train_labels": train_labels,  # True labels for training set
-        "train_acc": train_acc,  # Accuracy for training set
-        # "train_trial_chans": train_dataset.get_trial_chan(), TBD!!!
-        "train_embeddings": train_embeddings,  # Projector layer Embeddings for training set
-        "val_logits": val_logits,  # Predicted logits for validation set
-        "val_labels": val_labels,  # True labels for validation set
-        "val_acc": val_acc,  # Accuracy for validation set
-        "val_embeddings": val_embeddings,  # Projector layer Embeddings for validation set
-        "test_logits": test_logits,  # Predicted logits for test set
-        "test_labels": test_labels,  # True labels for test set
-        "test_acc": test_acc,  # Accuracy for test set
-        "test_embeddings": test_embeddings,  # Projector layer Embeddings for test set
-        "train_label_counts": train_label_counts,  # Label counts for training set
-        "train_chance_accuracy": train_chance_accuracy,  # Chance accuracy for training set
-        "val_label_counts": val_label_counts,  # Label counts for validation set
-        "val_chance_accuracy": val_chance_accuracy,  # Chance accuracy for validation set
-        "test_label_counts": test_label_counts,  # Label counts for test set
-        "test_chance_accuracy": test_chance_accuracy,  # Chance accuracy for test set
-        "w2v2_config": w2v2_config_dict,  # Model configuration
-        "best_ckpt_path": best_ckpt_path,  # Path to the best checkpoint
-    }
-
-    with open(file_path, "wb") as f:
-        pickle.dump(file_obj, f)
-        logger.info(f"Session {data} results saved to {file_path}")
-    logger.info(
-        f"Train accuracy: {train_acc}, Validation accuracy: {val_acc}, Test accuracy: {test_acc}"
-    )
-    wandb.log(
-        {
-            "Train accuracy": train_acc,
-            "Validation accuracy": val_acc,
-            "Test accuracy": test_acc,
-        }
-    )
-
-    # Deregister hooks
-    projector_hook_handle.remove()
-    classifier_hook_handle.remove()
-    gc.collect()
-    torch.cuda.empty_cache()
 
 
 def train(
