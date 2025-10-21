@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
         "--ssl_method",
         type=str,
         default="lfp2vec",
-        choices=["lfp2vec", "brainbert"],
+        choices=["lfp2vec", "brainbert", "simclr", "simclr_mlp"],
         help="SSL method to use for pretraining",
     )
     parser.add_argument(

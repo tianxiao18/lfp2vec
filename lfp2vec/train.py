@@ -51,7 +51,15 @@ from blind_localization.models.brainbert import (
 )
 from blind_localization.data.datasets import RawDataset
 from blind_localization.models.contrastive_pipeline import (
-    build_multi_session_dataloader_new,
+    train as simclr_train_epoch,
+    validation as simclr_validate_epoch,
+)
+from blind_localization.models.contrastive import ContrastiveEncoder, InfoNCELoss
+from blind_localization.models.decoder import (
+    ContrastiveLearningWithLR,
+    ContrastiveLearningWithMLP,
+    train_decoder as simclr_train_decoder,
+    validate_decoder as simclr_validate_decoder,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -791,6 +799,202 @@ def run_training(
         logger.info(f"BrainBERT baseline results saved to {file_path}")
 
         # Baseline finished, skip wav2vec2 fine-tuning path
+        gc.collect()
+        torch.cuda.empty_cache()
+        return
+
+    elif ssl_method in ("simclr", "simclr_mlp"):
+        logger.info("Preparing SimCLR dataloaders and model...")
+        # Use across-session split like lfp2vec
+        spectrogram_size = 500
+        time_bins = 16
+        batch_size = 64
+
+        # Build RawDataset-based loaders using the same aggregated sets
+        sim_train_ds = RawDataset(
+            train_dataset.data,
+            train_dataset.labels,
+            spectrogram_size=spectrogram_size,
+            time_bins=time_bins,
+            library="pytorch",
+        )
+        sim_val_ds = RawDataset(
+            val_dataset.data,
+            val_dataset.labels,
+            spectrogram_size=spectrogram_size,
+            time_bins=time_bins,
+            library="pytorch",
+        )
+        sim_test_ds = RawDataset(
+            test_dataset.data,
+            test_dataset.labels,
+            spectrogram_size=spectrogram_size,
+            time_bins=time_bins,
+            library="pytorch",
+        )
+
+        sim_train_loader = DataLoader(sim_train_ds, batch_size=batch_size, shuffle=True)
+        sim_val_loader = DataLoader(sim_val_ds, batch_size=batch_size, shuffle=True)
+        sim_test_loader = DataLoader(sim_test_ds, batch_size=batch_size, shuffle=False)
+
+        input_size = sim_train_loader.dataset[0][0][0].size()[0]
+
+        # Defaults inspired by simclr_lr_decoder.py (compact for baseline)
+        fc_layer_size = 256
+        latent_size = 128
+        temperature = 0.5
+        encoder_epochs = epoch
+        decoder_epochs = 20
+
+        encoder = ContrastiveEncoder(
+            fc_layer_size=fc_layer_size,
+            input_size=input_size,
+            output_size=latent_size,
+        ).to(device)
+
+        if ssl_method == "simclr_mlp":
+            sim_model = ContrastiveLearningWithMLP(
+                encoder,
+                input_dim=latent_size,
+                hidden_dim=256,
+                output_dim=len(id2label),
+            ).to(device)
+        else:
+            sim_model = ContrastiveLearningWithLR(
+                encoder,
+                input_dim=latent_size,
+                output_dim=len(id2label),
+            ).to(device)
+
+        contrastive_criterion = InfoNCELoss(temperature=temperature, device=device)
+        supervised_criterion = nn.CrossEntropyLoss()
+        enc_opt = torch.optim.Adam(sim_model.encoder.parameters(), lr=lr)
+        dec_opt = torch.optim.Adam(sim_model.parameters(), lr=3e-5)
+
+        # Stage 1: Unsupervised pretraining
+        for ep in range(encoder_epochs):
+            tr_loss = simclr_train_epoch(
+                sim_model.encoder,
+                sim_train_loader,
+                enc_opt,
+                contrastive_criterion,
+                device,
+            )
+            va_loss = simclr_validate_epoch(
+                sim_model.encoder, sim_val_loader, contrastive_criterion, device
+            )
+            logger.info(
+                f"[SimCLR] Epoch {ep+1}: train_loss={tr_loss:.4f} val_loss={va_loss:.4f}"
+            )
+            wandb.log(
+                {
+                    "ssl_method": "simclr",
+                    "ssl/train_loss": tr_loss,
+                    "ssl/val_loss": va_loss,
+                    "ssl/epoch": ep + 1,
+                }
+            )
+
+        # Stage 2: Supervised decoder on frozen or joint (use separate/frozen)
+        best_val_acc = 0.0
+        patience = 10
+        patience_ctr = 0
+        for ep in range(decoder_epochs):
+            tr = simclr_train_decoder(
+                sim_model,
+                sim_train_loader,
+                dec_opt,
+                contrastive_criterion,
+                supervised_criterion,
+                mode="separate",
+                device=device,
+            )
+            va = simclr_validate_decoder(
+                sim_model, sim_val_loader, supervised_criterion, device=device
+            )
+            # tolerant to tuple/dict signatures
+            if isinstance(tr, dict):
+                dec_train_loss = float(tr.get("loss", 0.0))
+                dec_train_acc = float(
+                    tr.get("balanced_accuracy", tr.get("accuracy", 0.0))
+                )
+            else:
+                dec_train_loss, dec_train_acc = tr
+            if isinstance(va, dict):
+                dec_val_loss = float(va.get("loss", 0.0))
+                dec_val_acc = float(va.get("balanced_accuracy", 0.0))
+                dec_val_f1 = float(va.get("macro_f1", 0.0))
+            else:
+                dec_val_loss, dec_val_acc, dec_val_f1 = va
+
+            wandb.log(
+                {
+                    "ssl_method": "simclr",
+                    "decoder/train_loss": dec_train_loss,
+                    "decoder/train_acc": dec_train_acc,
+                    "decoder/val_loss": dec_val_loss,
+                    "decoder/val_acc": dec_val_acc,
+                    "decoder/val_f1": dec_val_f1,
+                    "decoder/epoch": ep + 1,
+                }
+            )
+            logger.info(
+                f"[SimCLR-Decoder] Epoch {ep+1}: train_loss={dec_train_loss:.4f} "
+                f"train_acc={dec_train_acc:.4f} val_loss={dec_val_loss:.4f} "
+                f"val_acc={dec_val_acc:.4f} val_f1={dec_val_f1:.4f}"
+            )
+            if dec_val_acc > best_val_acc:
+                best_val_acc = dec_val_acc
+                patience_ctr = 0
+            else:
+                patience_ctr += 1
+                if patience_ctr >= patience:
+                    break
+
+        # Final test metrics
+        test_metrics = simclr_validate_decoder(
+            sim_model, sim_test_loader, supervised_criterion, device=device
+        )
+        if isinstance(test_metrics, dict):
+            sim_test_acc = float(test_metrics.get("balanced_accuracy", 0.0))
+            sim_test_f1 = float(test_metrics.get("macro_f1", 0.0))
+        else:
+            _, sim_test_acc, sim_test_f1 = test_metrics
+
+        logger.info(
+            f"[SimCLR-Decoder] Test Acc={sim_test_acc:.4f}, Test F1={sim_test_f1:.4f}"
+        )
+        wandb.log(
+            {
+                "ssl_method": "simclr",
+                "test/accuracy": sim_test_acc,
+                "test/f1": sim_test_f1,
+            }
+        )
+
+        # Save compact results
+        file_path = os.path.join(
+            output_path, f"{data}_{ri_tag}_simclr_ft_results.pickle"
+        )
+        file_obj = {
+            "val_best_acc": best_val_acc,
+            "test_acc": sim_test_acc,
+            "test_f1": sim_test_f1,
+            "simclr_cfg": {
+                "fc_layer_size": fc_layer_size,
+                "latent_size": latent_size,
+                "temperature": temperature,
+                "encoder_epochs": encoder_epochs,
+                "decoder_epochs": decoder_epochs,
+                "batch_size": batch_size,
+                "spectrogram_size": spectrogram_size,
+                "time_bins": time_bins,
+            },
+        }
+        with open(file_path, "wb") as f:
+            pickle.dump(file_obj, f)
+        logger.info(f"SimCLR baseline results saved to {file_path}")
+
         gc.collect()
         torch.cuda.empty_cache()
         return
