@@ -9,13 +9,23 @@
 Create the environment using:
 
 ```bash
-conda env create -f environment.yml
+conda create -n lfp2vec -c conda-forge --override-channels python=3.10
 conda activate lfp2vec
+pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements.txt
 ```
+
+`requirements.txt` pins the package versions used to produce the paper results.
 
 ## Data
 
-The repository expects LFP data and corresponding labels in the following structure, stored as `.pkl` files. And the preprocessing script is stored in script/dataset_preprocessing/
+All three datasets are public. The download and preprocessing scripts for each dataset are in:
+
+* `script/allen_preprocessing/` — Allen Brain Observatory Neuropixels (downloaded through `allensdk`)
+* `script/ibl_preprocessing/` — IBL Brainwide Map (downloaded through `ONE-api`, see `downloader.py`)
+* `script/Neuronexus_preprocessing/` — Buzsaki Lab Neuronexus recordings
+
+The preprocessing scripts write LFP data and corresponding labels as `.pkl` files in the following structure:
 
 ```
 data/

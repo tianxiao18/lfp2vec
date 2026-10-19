@@ -30,6 +30,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.decomposition import PCA
 import seaborn as sns
+from itertools import product
 
 def _sample_negatives(features: torch.FloatTensor, num_negatives: int):
         """
@@ -85,15 +86,15 @@ def arg_parser():
     parser.add_argument('--load_data', type=lambda x: x.lower() == 'true', help='Load data from disk or compute on fly', default=True)
     parser.add_argument('--rand_init', type=lambda x: x.lower() == 'true', help='random init or start from pretrained', default=False)
     parser.add_argument('--ssl', type=lambda x: x.lower() == 'true', help='self supervised training or fine tuning only', default=False)
-    parser.add_argument('--session', type=str, help='session run or full run', default=None)
+    parser.add_argument('--fold', type=int, help='Index of fold to run (0–9)', required=True)
     return parser.parse_args()
 
 
 args = arg_parser()
 data, trial_length, data_type, sampling_rate = args.data, args.trial_length, args.data_type, args.sampling_rate, 
-load_data, rand_init, ssl, selected_session = args.load_data, args.rand_init, args.ssl, args.session
+load_data, rand_init, ssl, fold = args.load_data, args.rand_init, args.ssl, args.fold
 print(f"Data: {data}, Data Type: {data_type}, Trial Length: {trial_length}, Sampling Rate: {sampling_rate}")
-print(f"Load Data: {load_data}, rand_init: {rand_init}, ssl: {ssl}, session: {selected_session}")
+print(f"Load Data: {load_data}, rand_init: {rand_init}, ssl: {ssl}, fold: {fold}")
 print("cuda is available: ", torch.cuda.is_available())
 
 output_path = f"../results/{data}/{data_type}/wave2vec2/across_session"
@@ -452,8 +453,11 @@ def run_wave2vec2(sessions, sess, sampling_rate, acronyms_arr):
 
     session_list = [s for s in session_list if s not in test_sessions]
     random.seed(11)
-    train_session_list = random.sample(session_list, int(len(session_list) * 0.8))
-    val_session_list = [ses for ses in session_list if ses not in train_session_list]
+
+    ad_sessions = [s for s in session_list if 'AD' in s]
+    val_session_list = random.sample(ad_sessions, 1)
+    train_session_list = [s for s in session_list if s not in val_session_list]
+
     print("Training on ", train_session_list)
     print("Validate on ", val_session_list)
     print("Testing on ", test_sessions)
@@ -561,15 +565,15 @@ def run_wave2vec2(sessions, sess, sampling_rate, acronyms_arr):
 
     print("Creating dataset dictionary...")
     # if load_data and os.path.exists(f"{data_loading_path}/{session}_{trial_length}_dataset_dict.pickle"):
-    # if load_data and os.path.exists(f"{data_loading_path}/disease_dataset_dict.pickle"):
-    #     print(f"Loading from {data_loading_path}/disease_dataset_dict.pickle")
-    #     with open(f"{data_loading_path}/disease_dataset_dict.pickle", 'rb') as f:
-    #         dataset_dict = pickle.load(f)
-    # else:
-    dataset_dict = create_dataset_dict(X_train_upsampled, y_train, X_val_upsampled, y_val, X_test_upsampled, y_test, custom_features)
-    if load_data:
-        with open(f"{output_path}/disease_dataset_dict.pickle", 'wb') as f:
-            pickle.dump(dataset_dict, f)
+    if load_data and os.path.exists(f"{data_loading_path}/disease_dataset_dict_fold{fold}.pickle"):
+        print(f"Loading from {data_loading_path}/disease_dataset_dict_fold{fold}.pickle")
+        with open(f"{data_loading_path}/disease_dataset_dict_fold{fold}.pickle", 'rb') as f:
+            dataset_dict = pickle.load(f)
+    else:
+        dataset_dict = create_dataset_dict(X_train_upsampled, y_train, X_val_upsampled, y_val, X_test_upsampled, y_test, custom_features)
+        if load_data:
+            with open(f"{output_path}/disease_dataset_dict_fold{fold}.pickle", 'wb') as f:
+                pickle.dump(dataset_dict, f)
 
     def generate_random_string(length):
         characters = string.ascii_letters + string.digits
@@ -609,7 +613,7 @@ def run_wave2vec2(sessions, sess, sampling_rate, acronyms_arr):
 
     ri_tag = 'rand_init' if rand_init else 'pretrained'
     ssl_tag = 'ssl' if ssl else 'nossl'
-    wandb.init(project="wav2vec_ssl", config=w2v2_config, name=f"disease-{ri_tag}-{ssl_tag}-exp", reinit=True)
+    wandb.init(project="wav2vec_ssl", config=w2v2_config, name=f"disease-{ri_tag}-{ssl_tag}-fold{fold}", reinit=True)
     # wandb.log({"percent_data": percent_to_stratify})
     # w2v2_config = {"vocab_size": 32, "hidden_size": 768, "num_hidden_layers": 12, "num_attention_heads": 12,
     #                "intermediate_size": 3072, "hidden_act": "gelu", "hidden_dropout": 0.1,
@@ -636,7 +640,8 @@ def run_wave2vec2(sessions, sess, sampling_rate, acronyms_arr):
     print(torch.cuda.is_available())
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ssl_model.to(device)
-    ssl_model.save_pretrained(f"{output_path}/disease/ssl_model/")
+    os.makedirs(f"{output_path}/disease/ssl_model_fold{fold}/", exist_ok=True)
+    ssl_model.save_pretrained(f"{output_path}/disease/ssl_model_fold{fold}/")
     print(f"Model is on device: {ssl_model.device}")
     print(X_train_upsampled.shape, X_val_upsampled.min(), X_test_upsampled.max())
 
@@ -670,9 +675,9 @@ def run_wave2vec2(sessions, sess, sampling_rate, acronyms_arr):
                 wandb.log({"Probe Train Loss": probe_train_loss, "Probe Train Accuracy": probe_train_acc,
                             "Probe Val Loss": probe_val_loss, "Probe Val Accuracy": probe_val_acc})
 
-                if max_probe_acc > probe_val_acc:
+                if probe_val_acc >= max_probe_acc:
                     max_probe_acc = max(max_probe_acc, probe_val_acc)
-                    ssl_model.save_pretrained(f"{output_path}/disease/ssl_model/")
+                    ssl_model.save_pretrained(f"{output_path}/disease/ssl_model_fold{fold}/")
 
     # supervised fine tuning
     # w2v2_config = Wav2Vec2Config(**w2v2_config)
@@ -699,6 +704,8 @@ def run_wave2vec2(sessions, sess, sampling_rate, acronyms_arr):
         "facebook/wav2vec2-base", num_labels=num_labels, label2id=label2id, id2label=id2label, config=w2v2_config
     )
     model.wav2vec2.load_state_dict(ssl_model.wav2vec2.state_dict())
+    for param in model.wav2vec2.parameters():
+            param.requires_grad = False
 
     training_args = TrainingArguments(
         output_dir=f"{output_path}/disease",
@@ -777,6 +784,8 @@ def run_wave2vec2(sessions, sess, sampling_rate, acronyms_arr):
     test_logits = test_pred[0]
     test_labels = test_pred[1]
     test_acc = test_pred[2]['test_accuracy']
+
+    print(train_acc, val_acc, test_acc)
     
     train_embeddings, train_labels = collect_embeddings(X_train_upsampled, y_train, trainer, custom_features, split_name="Train")
     val_embeddings, val_labels = collect_embeddings(X_val_upsampled, y_val, trainer, custom_features, split_name="Val")
@@ -784,28 +793,29 @@ def run_wave2vec2(sessions, sess, sampling_rate, acronyms_arr):
 
     ft_tag = "ft"
     visualizer = PCAVisualizer(label_json, output_path=output_path)
+    color_map = {"AD": "#ffa15a", "NN": "#636efa"}
     try:
-        visualizer.create_pca(train_embeddings, train_labels, 2, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "train")
-        visualizer.create_pca(train_embeddings, train_labels, 3, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "train")
-        visualizer.create_pca(val_embeddings, val_labels, 2, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "val")
-        visualizer.create_pca(val_embeddings, val_labels, 3, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "val")
-        visualizer.create_pca(test_embeddings, test_labels, 2, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "test")
-        visualizer.create_pca(test_embeddings, test_labels, 3, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "test")
+        visualizer.create_pca(train_embeddings, train_labels, 2, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "train", color_map)
+        visualizer.create_pca(train_embeddings, train_labels, 3, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "train", color_map)
+        visualizer.create_pca(val_embeddings, val_labels, 2, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "val", color_map)
+        visualizer.create_pca(val_embeddings, val_labels, 3, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "val", color_map)
+        visualizer.create_pca(test_embeddings, test_labels, 2, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "test", color_map)
+        visualizer.create_pca(test_embeddings, test_labels, 3, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "test", color_map)
 
         datasets = {
             "train": {"embeddings": train_embeddings, "labels": train_labels},
             "val": {"embeddings": val_embeddings, "labels": val_labels},
             "test": {"embeddings": test_embeddings, "labels": test_labels}
         }
-        visualizer.create_combined_pca(datasets, 2, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "combined")
-        visualizer.create_combined_pca(datasets, 3, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "combined")
+        visualizer.create_combined_pca(datasets, 2, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "combined", color_map)
+        visualizer.create_combined_pca(datasets, 3, f"disease_{ri_tag}_{ssl_tag}_{ft_tag}", "combined", color_map)
     except:
         print(f"Possible size mismatch: "
             f"Train({len(train_embeddings)}, {len(train_labels)}), "
             f"Val({len(val_embeddings)}, {len(val_labels)}), "
             f"Test({len(test_embeddings)}, {len(test_labels)})")
 
-    file_path = os.path.join(output_path, f'disease_{ri_tag}_{ssl_tag}_{random_string}_results.pickle')
+    file_path = os.path.join(output_path, f'disease_{ri_tag}_{ssl_tag}_fold{fold}_results.pickle')
     file_obj = {
         'train_logits': train_logits,  # Predicted logits for training set
         'train_labels': train_labels,  # True labels for training set
@@ -850,9 +860,10 @@ if __name__ == "__main__":
         pickle_path = f'/scratch/th3129/region_decoding/data/Neuronexus/lfp'
         hc_acronyms = ['NN', 'AD']
 
+    animals = {'AD_HF01_1':'AD', 'AD_HF02_2':'AD', 'AD_HF02_4':'AD', 'AD_HF03_1':'AD', 'AD_HF03_2':'AD', 'NN_syn_01':'NN', 'NN_syn_02':'NN'}
     feature_extractor = AutoFeatureExtractor.from_pretrained("facebook/wav2vec2-base")
     to_skip = []
-    test_sess = [random.choice(sessions_list[:5])] + [random.choice(sessions_list[5:])]
+    # test_sess = [random.choice(sessions_list[:5])] + [random.choice(sessions_list[5:])]
 
     # Hooks
     projector_output = None
@@ -860,5 +871,11 @@ if __name__ == "__main__":
     classifier_input_whole = None
     classifier_output = None
     debug_data = {}
+    
+    ad_animals = [k for k, v in animals.items() if v == 'AD']
+    nn_animals = [k for k, v in animals.items() if v == 'NN']
+    folds = list(product(ad_animals, nn_animals))
+    ad_test, nn_test = folds[fold]
+    test_sess = [ad_test, nn_test]
 
     run_wave2vec2(sessions_list, test_sess, int(sampling_rate), hc_acronyms)
